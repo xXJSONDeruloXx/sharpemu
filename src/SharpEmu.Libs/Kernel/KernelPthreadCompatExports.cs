@@ -12,7 +12,9 @@ public static class KernelPthreadCompatExports
     private const int MutexTypeDefault = 1;
     private const int MutexTypeErrorCheck = 1;
     private const int MutexTypeRecursive = 2;
-    private const int MutexTypeNormal = 4;
+    private const int MutexTypeNormal = 3;
+    private const int MutexTypeAdaptiveNp = 4;
+    private const ulong StaticAdaptiveMutexInitializer = 1;
     private const ulong SyntheticMutexHandleBase = 0x00006000_0000_0000;
     private const ulong SyntheticMutexAttrHandleBase = 0x00006001_0000_0000;
     private const ulong SyntheticCondHandleBase = 0x00006002_0000_0000;
@@ -87,18 +89,14 @@ public static class KernelPthreadCompatExports
         ExportName = "scePthreadGetthreadid",
         Target = Generation.Gen4 | Generation.Gen5,
         LibraryName = "libKernel")]
-    public static int PthreadGetthreadid(CpuContext ctx)
-    {
-        var currentThreadId = KernelPthreadState.GetCurrentThreadUniqueId();
-        var outAddress = ctx[CpuRegister.Rdi];
-        if (outAddress != 0 && !ctx.TryWriteUInt64(outAddress, currentThreadId))
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-        }
+    public static int PthreadGetthreadid(CpuContext ctx) => PthreadGetthreadidCore(ctx);
 
-        ctx[CpuRegister.Rax] = currentThreadId;
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
+    [SysAbiExport(
+        Nid = "3eqs37G74-s",
+        ExportName = "pthread_getthreadid_np",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int PosixPthreadGetthreadidNp(CpuContext ctx) => PthreadGetthreadidCore(ctx);
 
     [SysAbiExport(
         Nid = "cmo1RIYva9o",
@@ -169,6 +167,12 @@ public static class KernelPthreadCompatExports
         Target = Generation.Gen4 | Generation.Gen5,
         LibraryName = "libKernel")]
     public static int PosixPthreadMutexUnlock(CpuContext ctx) => PthreadMutexUnlockCore(ctx, ctx[CpuRegister.Rdi], requireOwner: true);
+
+    private static int PthreadGetthreadidCore(CpuContext ctx)
+    {
+        ctx[CpuRegister.Rax] = KernelPthreadState.GetCurrentThreadUniqueId();
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
 
     [SysAbiExport(
         Nid = "F8bUHwAG284",
@@ -630,6 +634,11 @@ public static class KernelPthreadCompatExports
             return false;
         }
 
+        if (pointedHandle == StaticAdaptiveMutexInitializer)
+        {
+            return CreateImplicitMutexState(ctx, mutexAddress, MutexTypeAdaptiveNp, out resolvedAddress, out state);
+        }
+
         if (pointedHandle != 0)
         {
             lock (_stateGate)
@@ -652,18 +661,7 @@ public static class KernelPthreadCompatExports
             return false;
         }
 
-        var createdState = new PthreadMutexState();
-        var syntheticHandle = AllocateSyntheticHandle(SyntheticMutexHandleBase, ref _nextSyntheticMutexHandleId);
-        lock (_stateGate)
-        {
-            _mutexStates[mutexAddress] = createdState;
-            _mutexStates[syntheticHandle] = createdState;
-        }
-
-        _ = ctx.TryWriteUInt64(mutexAddress, syntheticHandle);
-        resolvedAddress = syntheticHandle;
-        state = createdState;
-        return true;
+        return CreateImplicitMutexState(ctx, mutexAddress, MutexTypeDefault, out resolvedAddress, out state);
     }
 
     private static ulong ResolveMutexAttrHandle(CpuContext ctx, ulong attrAddress)
@@ -953,9 +951,41 @@ public static class KernelPthreadCompatExports
             1 => MutexTypeErrorCheck,
             2 => MutexTypeRecursive,
             3 => MutexTypeNormal,
-            4 => MutexTypeNormal,
+            4 => MutexTypeAdaptiveNp,
             _ => MutexTypeDefault,
         };
+    }
+
+    private static bool CreateImplicitMutexState(CpuContext ctx, ulong mutexAddress, int type, out ulong resolvedAddress, [NotNullWhen(true)] out PthreadMutexState? state)
+    {
+        var createdState = new PthreadMutexState
+        {
+            Type = type,
+        };
+
+        var syntheticHandle = AllocateSyntheticHandle(SyntheticMutexHandleBase, ref _nextSyntheticMutexHandleId);
+        lock (_stateGate)
+        {
+            if (_mutexStates.TryGetValue(mutexAddress, out state))
+            {
+                resolvedAddress = mutexAddress;
+                return true;
+            }
+
+            if (_mutexStates.TryGetValue(syntheticHandle, out state))
+            {
+                resolvedAddress = syntheticHandle;
+                return true;
+            }
+
+            _mutexStates[mutexAddress] = createdState;
+            _mutexStates[syntheticHandle] = createdState;
+        }
+
+        _ = ctx.TryWriteUInt64(mutexAddress, syntheticHandle);
+        resolvedAddress = syntheticHandle;
+        state = createdState;
+        return true;
     }
 
     private static void TracePthreadSelf(CpuContext ctx, ulong currentThreadHandle)

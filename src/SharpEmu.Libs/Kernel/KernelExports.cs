@@ -290,84 +290,17 @@ public static class KernelExports
     {
         ulong fmtPtr = ctx[CpuRegister.Rdi];
         string fmt = ReadCString(ctx, fmtPtr, 4096);
-
-        ulong[] args =
+        string outStr = KernelMemoryCompatExports.FormatStringFromVarArgs(ctx, fmt, firstGpArgIndex: 1);
+        if (outStr.EndsWith('\n') || outStr.EndsWith('\r'))
         {
-        ctx[CpuRegister.Rsi],
-        ctx[CpuRegister.Rdx],
-        ctx[CpuRegister.Rcx],
-        ctx[CpuRegister.R8],
-        ctx[CpuRegister.R9],
-    };
-
-        int argIndex = 0;
-        var sb = new System.Text.StringBuilder(fmt.Length + 64);
-
-        for (int i = 0; i < fmt.Length; i++)
+            Console.Write($"[DEBUG][PRINF] {outStr}");
+        }
+        else
         {
-            char ch = fmt[i];
-            if (ch != '%')
-            {
-                sb.Append(ch);
-                continue;
-            }
-
-            if (i + 1 < fmt.Length && fmt[i + 1] == '%')
-            {
-                sb.Append('%');
-                i++;
-                continue;
-            }
-
-            int j = i + 1;
-            while (j < fmt.Length && "-+ #0".IndexOf(fmt[j]) >= 0) j++;
-            while (j < fmt.Length && char.IsDigit(fmt[j])) j++;
-
-            if (j < fmt.Length && fmt[j] == '.')
-            {
-                j++;
-                while (j < fmt.Length && char.IsDigit(fmt[j])) j++;
-            }
-
-            if (j >= fmt.Length) break;
-            char spec = fmt[j];
-            i = j;
-
-            ulong a = argIndex < args.Length ? args[argIndex++] : 0;
-
-            switch (spec)
-            {
-                case 's':
-                    sb.Append(a == 0 ? "(null)" : ReadCString(ctx, a, 4096));
-                    break;
-
-                case 'd':
-                case 'i':
-                    sb.Append(unchecked((int)a));
-                    break;
-
-                case 'u':
-                    sb.Append(unchecked((uint)a));
-                    break;
-
-                case 'x':
-                    sb.Append(unchecked((uint)a).ToString("x"));
-                    break;
-
-                case 'p':
-                    sb.Append("0x").Append(a.ToString("x16"));
-                    break;
-
-                default:
-                    sb.Append('%').Append(spec);
-                    break;
-            }
+            Console.WriteLine($"[DEBUG][PRINF] {outStr}");
         }
 
-        string outStr = sb.ToString();
-        Console.WriteLine($"[DEBUG][PRINF] {outStr}");
-
-        ctx[CpuRegister.Rax] = (ulong)outStr.Length;
+        ctx[CpuRegister.Rax] = (ulong)System.Text.Encoding.UTF8.GetByteCount(outStr);
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 

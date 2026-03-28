@@ -154,15 +154,57 @@ public sealed partial class DirectExecutionBackend
 		bool flag = num7 >= 2156221920u && num7 <= 2156225024u;
 		bool flag2 = num7 >= 2156351360u && num7 <= 2156352080u;
 		bool flag3 = num >= 1020 && num <= 1040;
-		if (!flag0 && (num <= 128 || (num >= 240 && num <= 400) || (num >= 900 && num <= 1300) || num % 100000 == 0L || (importStubEntry.Nid == "tsvEmnenz48" && (num <= 256 || num % 1000 == 0L)) || (importStubEntry.Nid == "rTXw65xmLIA" && (num <= 256 || num % 128 == 0)) || flag || flag2 || flag3))
+		bool logAllImports = string.Equals(Environment.GetEnvironmentVariable("SHARPEMU_LOG_ALL_IMPORTS"), "1", StringComparison.Ordinal);
+		string importFilter = Environment.GetEnvironmentVariable("SHARPEMU_LOG_IMPORT_FILTER");
+		bool flag4 = !string.IsNullOrWhiteSpace(importFilter);
+		bool flag5 = false;
+		ExportedFunction matchedExport = null;
+		if (_moduleManager.TryGetExport(importStubEntry.Nid, out ExportedFunction export))
 		{
-			if (_moduleManager.TryGetExport(importStubEntry.Nid, out ExportedFunction export))
+			matchedExport = export;
+			if (flag4)
 			{
-				Console.Error.WriteLine($"[LOADER][TRACE] Import#{num}: {export.LibraryName}:{export.Name} ({importStubEntry.Nid})");
+				flag5 = export.LibraryName.Contains(importFilter, StringComparison.OrdinalIgnoreCase)
+					|| export.Name.Contains(importFilter, StringComparison.OrdinalIgnoreCase)
+					|| importStubEntry.Nid.Contains(importFilter, StringComparison.OrdinalIgnoreCase);
+			}
+		}
+		else if (flag4)
+		{
+			flag5 = importStubEntry.Nid.Contains(importFilter, StringComparison.OrdinalIgnoreCase);
+		}
+		bool flag6 = logAllImports || flag5;
+		if (!flag0 && (flag6 || num <= 128 || (num >= 240 && num <= 400) || (num >= 900 && num <= 1300) || num % 100000 == 0L || (importStubEntry.Nid == "tsvEmnenz48" && (num <= 256 || num % 1000 == 0L)) || (importStubEntry.Nid == "rTXw65xmLIA" && (num <= 256 || num % 128 == 0)) || flag || flag2 || flag3))
+		{
+			if (matchedExport != null)
+			{
+				if (flag6)
+				{
+					Console.Error.WriteLine(
+						$"[LOADER][TRACE] Import#{num}: {matchedExport.LibraryName}:{matchedExport.Name} ({importStubEntry.Nid}) " +
+						$"rdi=0x{value:X16} rsi=0x{value2:X16} rdx=0x{num3:X16} rcx=0x{num4:X16} ret=0x{num7:X16}");
+				}
+				else
+				{
+					Console.Error.WriteLine($"[LOADER][TRACE] Import#{num}: {matchedExport.LibraryName}:{matchedExport.Name} ({importStubEntry.Nid})");
+				}
 			}
 			else
 			{
-				Console.Error.WriteLine($"[LOADER][TRACE] Import#{num}: {importStubEntry.Nid}");
+				if (flag6)
+				{
+					Console.Error.WriteLine(
+						$"[LOADER][TRACE] Import#{num}: {importStubEntry.Nid} " +
+						$"rdi=0x{value:X16} rsi=0x{value2:X16} rdx=0x{num3:X16} rcx=0x{num4:X16} ret=0x{num7:X16}");
+				}
+				else
+				{
+					Console.Error.WriteLine($"[LOADER][TRACE] Import#{num}: {importStubEntry.Nid}");
+				}
+			}
+			if (flag6)
+			{
+				Console.Error.Flush();
 			}
 		}
 		if (!flag0)
@@ -211,25 +253,6 @@ public sealed partial class DirectExecutionBackend
 			{
 			}
 			TryBypassStackChkFailTrap(num, num7);
-		}
-		if (importStubEntry.Nid == "9rAeANT2tyE" || importStubEntry.Nid == "1j3S3n-tTW4")
-		{
-			ulong rspDbg = _cpuContext[CpuRegister.Rsp];
-			Console.Error.WriteLine(
-				$"[LOADER][TRACE] ImportDbg#{num}: nid={importStubEntry.Nid} " +
-				$"ret=0x{num7:X16} rsp=0x{rspDbg:X16} rsp&7=0x{(rspDbg & 7):X} rsp&F=0x{(rspDbg & 0xF):X}");
-
-			if (_cpuContext.TryReadUInt64(rspDbg, out var s0))
-				Console.Error.WriteLine($"[LOADER][TRACE]   [rsp+0x00] = 0x{s0:X16}");
-			if (_cpuContext.TryReadUInt64(rspDbg + 8, out var s8))
-				Console.Error.WriteLine($"[LOADER][TRACE]   [rsp+0x08] = 0x{s8:X16}");
-			if (_cpuContext.TryReadUInt64(rspDbg + 16, out var s10))
-				Console.Error.WriteLine($"[LOADER][TRACE]   [rsp+0x10] = 0x{s10:X16}");
-			if (_cpuContext.TryReadUInt64(rspDbg + 24, out var s18))
-				Console.Error.WriteLine($"[LOADER][TRACE]   [rsp+0x18] = 0x{s18:X16}");
-
-			ProbeReturnRip(num7, num);
-			Console.Error.Flush();
 		}
 		try
 		{

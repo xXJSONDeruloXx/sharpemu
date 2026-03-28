@@ -125,6 +125,8 @@ public sealed class SharpEmuRuntime : ISharpEmuRuntime
 
     public OrbisGen2Result Run(string ebootPath)
     {
+        var normalizedEbootPath = Path.GetFullPath(ebootPath);
+        using var app0Binding = BindApp0Root(normalizedEbootPath);
         Console.Error.WriteLine($"[RUNTIME] Loading: {ebootPath}");
         LastExecutionDiagnostics = null;
         LastExecutionTrace = null;
@@ -132,8 +134,7 @@ public sealed class SharpEmuRuntime : ISharpEmuRuntime
         LastBasicBlockTrace = null;
         LastMilestoneLog = null;
         KernelModuleRegistry.Reset();
-        var image = LoadImage(ebootPath);
-        var normalizedEbootPath = Path.GetFullPath(ebootPath);
+        var image = LoadImage(normalizedEbootPath);
         RegisterLoadedModule(normalizedEbootPath, image, isMain: true, isSystemModule: false);
         KernelRuntimeCompatExports.ConfigureProcessProcParamAddress(image.ProcParamAddress);
         Console.Error.WriteLine($"[RUNTIME] Entry: 0x{image.EntryPoint:X16}");
@@ -348,6 +349,41 @@ public sealed class SharpEmuRuntime : ISharpEmuRuntime
         }
 
         return result;
+    }
+
+    private static App0BindingScope? BindApp0Root(string normalizedEbootPath)
+    {
+        const string app0VariableName = "SHARPEMU_APP0_DIR";
+        if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(app0VariableName)))
+        {
+            return null;
+        }
+
+        var app0Root = Path.GetDirectoryName(normalizedEbootPath);
+        if (string.IsNullOrWhiteSpace(app0Root))
+        {
+            return null;
+        }
+
+        Environment.SetEnvironmentVariable(app0VariableName, app0Root);
+        return new App0BindingScope(app0VariableName);
+    }
+
+    private sealed class App0BindingScope(string variableName) : IDisposable
+    {
+        private readonly string _variableName = variableName;
+        private bool _disposed;
+
+        public void Dispose()
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            Environment.SetEnvironmentVariable(_variableName, null);
+            _disposed = true;
+        }
     }
 
     private OrbisGen2Result? RunAllInitializers(

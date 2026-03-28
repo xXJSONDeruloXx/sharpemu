@@ -31,6 +31,7 @@ public static class KernelRuntimeCompatExports
     private const ulong DefaultKernelTscFrequency = 10_000_000UL;
     private const ulong PrtAreaStartAddress = 0x0000001000000000UL;
     private const ulong PrtAreaSize = 0x000000EC00000000UL;
+    private const int AioInitParamSize = 0x3C;
     private const uint MemCommit = 0x1000;
     private const uint MemReserve = 0x2000;
     private const uint PageExecuteReadWrite = 0x40;
@@ -774,6 +775,48 @@ public static class KernelRuntimeCompatExports
         lock (_stateGate)
         {
             _loadedSysmodules.Add(moduleId);
+        }
+
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
+        Nid = "nu4a0-arQis",
+        ExportName = "sceKernelAioInitializeParam",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int KernelAioInitializeParam(CpuContext ctx)
+    {
+        var paramAddress = ctx[CpuRegister.Rdi];
+        if (paramAddress == 0)
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+        }
+
+        Span<byte> zero = stackalloc byte[AioInitParamSize];
+        zero.Clear();
+        if (!ctx.Memory.TryWrite(paramAddress, zero))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
+        Nid = "vYU8P9Td2Zo",
+        ExportName = "sceKernelAioInitializeImpl",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int KernelAioInitializeImpl(CpuContext ctx)
+    {
+        var paramAddress = ctx[CpuRegister.Rdi];
+        var size = unchecked((int)ctx[CpuRegister.Rsi]);
+        if (paramAddress == 0 || size < AioInitParamSize)
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
         }
 
         ctx[CpuRegister.Rax] = 0;

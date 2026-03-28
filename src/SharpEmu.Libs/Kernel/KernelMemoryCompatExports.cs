@@ -7,12 +7,14 @@ using System.Text;
 using System.Threading;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Linq;
 
 namespace SharpEmu.Libs.Kernel;
 
 public static class KernelMemoryCompatExports
 {
     private const int MaxGuestStringLength = 4096;
+    private const int WideCharSize = sizeof(ushort);
     private const int MemsetChunkSize = 16 * 1024;
     private const int TlsModuleBlockSize = 0x10000;
     private const int O_WRONLY = 0x1;
@@ -51,6 +53,26 @@ public static class KernelMemoryCompatExports
     private const int Enomem = 12;
     private const int Einval = 22;
     private const nuint DefaultLibcHeapAlignment = 16;
+    private const ushort KernelStatModeDirectory = 0x41FF;
+    private const ushort KernelStatModeRegular = 0x81FF;
+    private const int KernelStatSize = 120;
+    private const int KernelStatStDevOffset = 0;
+    private const int KernelStatStInoOffset = 4;
+    private const int KernelStatStModeOffset = 8;
+    private const int KernelStatStNlinkOffset = 10;
+    private const int KernelStatStUidOffset = 12;
+    private const int KernelStatStGidOffset = 16;
+    private const int KernelStatStRdevOffset = 20;
+    private const int KernelStatStAtimOffset = 24;
+    private const int KernelStatStMtimOffset = 40;
+    private const int KernelStatStCtimOffset = 56;
+    private const int KernelStatStSizeOffset = 72;
+    private const int KernelStatStBlocksOffset = 80;
+    private const int KernelStatStBlksizeOffset = 88;
+    private const int KernelStatStFlagsOffset = 92;
+    private const int KernelStatStGenOffset = 96;
+    private const int KernelStatStLspareOffset = 100;
+    private const int KernelStatStBirthtimOffset = 104;
 
     private static readonly object _fdGate = new();
     private static readonly Dictionary<int, FileStream> _openFiles = new();
@@ -232,8 +254,24 @@ public static class KernelMemoryCompatExports
         LibraryName = "libc")]
     public static int Wcslen(CpuContext ctx)
     {
-        if (!TryReadWideCString(ctx, ctx[CpuRegister.Rdi], 1_048_576, out var units))
+        var address = ctx[CpuRegister.Rdi];
+        if (string.Equals(Environment.GetEnvironmentVariable("SHARPEMU_LOG_WIDE"), "1", StringComparison.Ordinal))
         {
+            Span<byte> probe = stackalloc byte[32];
+            if (TryReadCompat(ctx, address, probe))
+            {
+                Console.Error.WriteLine(
+                    $"[LOADER][TRACE] wcslen probe @0x{address:X16}: {Convert.ToHexString(probe).ToLowerInvariant()}");
+            }
+            else
+            {
+                Console.Error.WriteLine($"[LOADER][TRACE] wcslen probe @0x{address:X16}: <unreadable>");
+            }
+        }
+
+        if (!TryReadWideCString(ctx, address, 1_048_576, out var units))
+        {
+            Console.Error.WriteLine($"[LOADER][WARN] wcslen: unreadable string at 0x{address:X16}");
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
         }
 
@@ -468,21 +506,21 @@ public static class KernelMemoryCompatExports
         var destination = ctx[CpuRegister.Rdi];
         var source = ctx[CpuRegister.Rsi];
         var count = (int)Math.Min(ctx[CpuRegister.Rdx], int.MaxValue);
-        if (count < 0 || count > (int.MaxValue / sizeof(ushort)))
+        if (count < 0 || count > (int.MaxValue / WideCharSize))
         {
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
         }
 
-        var payload = new byte[count * sizeof(ushort)];
+        var payload = new byte[count * WideCharSize];
         for (var copied = 0; copied < count; copied++)
         {
-            if (!TryReadUInt16Compat(ctx, source + ((ulong)copied * sizeof(ushort)), out var unit))
+            if (!TryReadUInt16Compat(ctx, source + ((ulong)copied * WideCharSize), out var unit))
             {
                 return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
             }
 
             BinaryPrimitives.WriteUInt16LittleEndian(
-                payload.AsSpan(copied * sizeof(ushort), sizeof(ushort)),
+                payload.AsSpan(copied * WideCharSize, WideCharSize),
                 unit);
 
             if (unit == 0)
@@ -511,14 +549,14 @@ public static class KernelMemoryCompatExports
         var needle = unchecked((ushort)ctx[CpuRegister.Rsi]);
         for (ulong index = 0; index < 1_048_576; index++)
         {
-            if (!TryReadUInt16Compat(ctx, address + (index * sizeof(ushort)), out var unit))
+            if (!TryReadUInt16Compat(ctx, address + (index * WideCharSize), out var unit))
             {
                 return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
             }
 
             if (unit == needle)
             {
-                ctx[CpuRegister.Rax] = address + (index * sizeof(ushort));
+                ctx[CpuRegister.Rax] = address + (index * WideCharSize);
                 return (int)OrbisGen2Result.ORBIS_GEN2_OK;
             }
 
@@ -814,6 +852,38 @@ public static class KernelMemoryCompatExports
         var mode = ResolveOpenMode(flags, access);
         try
         {
+            var wantsDirectory = (flags & O_DIRECTORY) != 0;
+            if (wantsDirectory || Directory.Exists(hostPath))
+            {
+                if (!Directory.Exists(hostPath))
+                {
+                    LogOpenTrace($"_open miss path='{guestPath}' host='{hostPath}' flags=0x{flags:X8} directory=1");
+                    return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
+                }
+
+                if (access != FileAccess.Read || (flags & (O_CREAT | O_TRUNC | O_APPEND)) != 0)
+                {
+                    LogOpenTrace($"_open invalid-dir path='{guestPath}' host='{hostPath}' flags=0x{flags:X8}");
+                    return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+                }
+
+                var directoryFd = (int)Interlocked.Increment(ref _nextFileDescriptor);
+                lock (_fdGate)
+                {
+                    _openDirectories[directoryFd] = new OpenDirectory
+                    {
+                        Path = hostPath,
+                        Entries = EnumerateDirectoryEntries(hostPath),
+                        NextIndex = 0
+                    };
+                }
+
+                LogOpenTrace($"_open dir path='{guestPath}' host='{hostPath}' flags=0x{flags:X8} fd={directoryFd}");
+                ctx[CpuRegister.Rax] = unchecked((ulong)directoryFd);
+                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+            }
+
+            EnsureOpenParentDirectoryExists(guestPath, hostPath, flags);
             var stream = new FileStream(hostPath, mode, access, FileShare.ReadWrite);
             if ((flags & O_APPEND) != 0)
             {
@@ -826,16 +896,16 @@ public static class KernelMemoryCompatExports
                 _openFiles[fd] = stream;
             }
 
+            LogOpenTrace($"_open file path='{guestPath}' host='{hostPath}' flags=0x{flags:X8} fd={fd}");
             ctx[CpuRegister.Rax] = unchecked((ulong)fd);
             return (int)OrbisGen2Result.ORBIS_GEN2_OK;
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+            LogOpenTrace($"_open fail path='{guestPath}' host='{hostPath}' flags=0x{flags:X8} ex={ex.GetType().Name}: {ex.Message}");
+            return ex is UnauthorizedAccessException
+                ? (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT
+                : (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
         }
     }
 
@@ -844,9 +914,69 @@ public static class KernelMemoryCompatExports
         ExportName = "_close",
         Target = Generation.Gen4 | Generation.Gen5,
         LibraryName = "libKernel")]
-    public static int KernelCloseUnderscore(CpuContext ctx)
+    public static int KernelCloseUnderscore(CpuContext ctx) => KernelCloseCore(ctx, unchecked((int)ctx[CpuRegister.Rdi]));
+
+    [SysAbiExport(
+        Nid = "UK2Tl2DWUns",
+        ExportName = "sceKernelClose",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int KernelClose(CpuContext ctx) => KernelCloseCore(ctx, unchecked((int)ctx[CpuRegister.Rdi]));
+
+    [SysAbiExport(
+        Nid = "eV9wAD2riIA",
+        ExportName = "sceKernelStat",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int KernelStat(CpuContext ctx)
+    {
+        var pathAddress = ctx[CpuRegister.Rdi];
+        var statAddress = ctx[CpuRegister.Rsi];
+        if (pathAddress == 0 || statAddress == 0)
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+        }
+
+        if (!TryReadNullTerminatedUtf8(ctx, pathAddress, MaxGuestStringLength, out var guestPath))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        var hostPath = ResolveGuestPath(guestPath);
+        if (!TryWriteHostPathStat(ctx, statAddress, hostPath))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
+        }
+
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
+        Nid = "kBwCPsYX-m4",
+        ExportName = "sceKernelFstat",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int KernelFstat(CpuContext ctx)
     {
         var fd = unchecked((int)ctx[CpuRegister.Rdi]);
+        var statAddress = ctx[CpuRegister.Rsi];
+        if (statAddress == 0)
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+        }
+
+        if (!TryWriteOpenDescriptorStat(ctx, fd, statAddress))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
+        }
+
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    private static int KernelCloseCore(CpuContext ctx, int fd)
+    {
         if (fd is 0 or 1 or 2)
         {
             ctx[CpuRegister.Rax] = 0;
@@ -856,7 +986,15 @@ public static class KernelMemoryCompatExports
         FileStream? stream;
         lock (_fdGate)
         {
-            if (!_openFiles.Remove(fd, out stream))
+            if (_openFiles.Remove(fd, out stream))
+            {
+            }
+            else if (_openDirectories.Remove(fd))
+            {
+                ctx[CpuRegister.Rax] = 0;
+                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+            }
+            else
             {
                 return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
             }
@@ -908,6 +1046,36 @@ public static class KernelMemoryCompatExports
 
         ctx[CpuRegister.Rax] = unchecked((ulong)read);
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
+        Nid = "taRWhTJFTgE",
+        ExportName = "sceKernelGetdirentries",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int KernelGetdirentries(CpuContext ctx)
+    {
+        return KernelGetdirentriesCore(
+            ctx,
+            unchecked((int)ctx[CpuRegister.Rdi]),
+            ctx[CpuRegister.Rsi],
+            unchecked((int)Math.Min(ctx[CpuRegister.Rdx], int.MaxValue)),
+            ctx[CpuRegister.Rcx]);
+    }
+
+    [SysAbiExport(
+        Nid = "j2AIqSqJP0w",
+        ExportName = "sceKernelGetdents",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int KernelGetdents(CpuContext ctx)
+    {
+        return KernelGetdirentriesCore(
+            ctx,
+            unchecked((int)ctx[CpuRegister.Rdi]),
+            ctx[CpuRegister.Rsi],
+            unchecked((int)Math.Min(ctx[CpuRegister.Rdx], int.MaxValue)),
+            0);
     }
 
     [SysAbiExport(
@@ -1883,9 +2051,9 @@ public static class KernelMemoryCompatExports
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 
-    private static string FormatString(CpuContext ctx, string format)
+    internal static string FormatStringFromVarArgs(CpuContext ctx, string format, int firstGpArgIndex)
     {
-        var gpIndex = 3; // RDI, RSI, RDX used by snprintf itself, args start at RCX (index 3)
+        var gpIndex = Math.Max(0, firstGpArgIndex);
 
         ulong GetGpArg(int index)
         {
@@ -1909,6 +2077,11 @@ public static class KernelMemoryCompatExports
         }
 
         return FormatString(ctx, format, NextGpArg, NextFloatArg);
+    }
+
+    private static string FormatString(CpuContext ctx, string format)
+    {
+        return FormatStringFromVarArgs(ctx, format, firstGpArgIndex: 3);
     }
 
     private static string FormatString(
@@ -2137,6 +2310,20 @@ public static class KernelMemoryCompatExports
                         {
                             sb.Append("(null)");
                         }
+                        else if (lengthMod == "l")
+                        {
+                            if (TryReadWideCString(ctx, strAddr, 1_048_576, out var wideUnits))
+                            {
+                                var str = DecodeWideUnits(wideUnits);
+                                if (precision >= 0 && str.Length > precision)
+                                    str = str.Substring(0, precision);
+                                sb.Append(PadString(str, width, leftAlign, false));
+                            }
+                            else
+                            {
+                                sb.Append("(null)");
+                            }
+                        }
                         else if (TryReadCString(ctx, strAddr, 1_048_576, out var strBytes))
                         {
                             var str = Encoding.UTF8.GetString(strBytes);
@@ -2153,8 +2340,20 @@ public static class KernelMemoryCompatExports
 
                 case 'c':
                     {
-                        var ch = (char)(byte)nextGpArg();
-                        sb.Append(PadString(ch.ToString(), width, leftAlign, false));
+                        string renderedChar;
+                        if (lengthMod == "l")
+                        {
+                            var scalar = unchecked((ushort)nextGpArg());
+                            renderedChar = TryConvertWideScalarToString(scalar, out var wideCharText)
+                                ? wideCharText
+                                : "?";
+                        }
+                        else
+                        {
+                            renderedChar = ((char)(byte)nextGpArg()).ToString();
+                        }
+
+                        sb.Append(PadString(renderedChar, width, leftAlign, false));
                     }
                     break;
 
@@ -2510,6 +2709,37 @@ public static class KernelMemoryCompatExports
             return guestPath;
         }
 
+        var devlogAppRoot = ResolveDevlogAppRoot();
+        if (guestPath.StartsWith("/devlog/app/", StringComparison.OrdinalIgnoreCase))
+        {
+            var relative = guestPath["/devlog/app/".Length..].Replace('/', Path.DirectorySeparatorChar);
+            return Path.Combine(devlogAppRoot, relative);
+        }
+
+        if (guestPath.StartsWith("devlog/app/", StringComparison.OrdinalIgnoreCase))
+        {
+            var relative = guestPath["devlog/app/".Length..].Replace('/', Path.DirectorySeparatorChar);
+            return Path.Combine(devlogAppRoot, relative);
+        }
+
+        if (string.Equals(guestPath, "/devlog/app", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(guestPath, "devlog/app", StringComparison.OrdinalIgnoreCase))
+        {
+            return devlogAppRoot;
+        }
+
+        var temp0Root = ResolveTemp0Root();
+        if (guestPath.StartsWith("/temp0/", StringComparison.OrdinalIgnoreCase))
+        {
+            var relative = guestPath["/temp0/".Length..].Replace('/', Path.DirectorySeparatorChar);
+            return Path.Combine(temp0Root, relative);
+        }
+
+        if (string.Equals(guestPath, "/temp0", StringComparison.OrdinalIgnoreCase))
+        {
+            return temp0Root;
+        }
+
         var app0Root = Environment.GetEnvironmentVariable("SHARPEMU_APP0_DIR");
         if (!string.IsNullOrWhiteSpace(app0Root))
         {
@@ -2527,6 +2757,71 @@ public static class KernelMemoryCompatExports
         }
 
         return guestPath;
+    }
+
+    private static string ResolveDevlogAppRoot()
+    {
+        var configuredRoot = Environment.GetEnvironmentVariable("SHARPEMU_DEVLOG_APP_DIR");
+        string root;
+        if (!string.IsNullOrWhiteSpace(configuredRoot))
+        {
+            root = Path.GetFullPath(configuredRoot);
+        }
+        else
+        {
+            root = Path.GetFullPath(Path.Combine(Environment.CurrentDirectory, "logs", "devlog", "app"));
+        }
+
+        Directory.CreateDirectory(root);
+        return root;
+    }
+
+    private static string ResolveTemp0Root()
+    {
+        const string temp0VariableName = "SHARPEMU_TEMP0_DIR";
+        var configuredRoot = Environment.GetEnvironmentVariable(temp0VariableName);
+        if (!string.IsNullOrWhiteSpace(configuredRoot))
+        {
+            return Path.GetFullPath(configuredRoot);
+        }
+
+        var app0Root = Environment.GetEnvironmentVariable("SHARPEMU_APP0_DIR");
+        var appName = string.IsNullOrWhiteSpace(app0Root)
+            ? "default"
+            : Path.GetFileName(Path.TrimEndingDirectorySeparator(app0Root));
+        if (string.IsNullOrWhiteSpace(appName))
+        {
+            appName = "default";
+        }
+
+        var invalidChars = Path.GetInvalidFileNameChars();
+        appName = new string(appName.Select(ch => invalidChars.Contains(ch) ? '_' : ch).ToArray());
+        var root = Path.Combine(Path.GetTempPath(), "SharpEmu", appName, "temp0");
+        Environment.SetEnvironmentVariable(temp0VariableName, root);
+        return root;
+    }
+
+    private static void EnsureOpenParentDirectoryExists(string guestPath, string hostPath, int flags)
+    {
+        if (string.IsNullOrWhiteSpace(hostPath))
+        {
+            return;
+        }
+
+        var shouldCreateParent =
+            (flags & O_CREAT) != 0 ||
+            guestPath.StartsWith("/devlog/app/", StringComparison.OrdinalIgnoreCase) ||
+            guestPath.StartsWith("devlog/app/", StringComparison.OrdinalIgnoreCase);
+        if (!shouldCreateParent)
+        {
+            return;
+        }
+
+        var parentDirectory = Path.GetDirectoryName(hostPath);
+        if (!string.IsNullOrWhiteSpace(parentDirectory))
+        {
+            Directory.CreateDirectory(parentDirectory);
+        }
     }
 
     private static bool TryReadCString(CpuContext ctx, ulong address, ulong maxLength, out byte[] bytes)
@@ -2602,7 +2897,7 @@ public static class KernelMemoryCompatExports
         var buffer = new List<ushort>(Math.Min(limit, 256));
         for (var i = 0; i < limit; i++)
         {
-            if (!TryReadUInt16Compat(ctx, address + ((ulong)i * sizeof(ushort)), out var unit))
+            if (!TryReadUInt16Compat(ctx, address + ((ulong)i * WideCharSize), out var unit))
             {
                 return false;
             }
@@ -2631,13 +2926,13 @@ public static class KernelMemoryCompatExports
         var max = limit == ulong.MaxValue ? 1_048_576UL : Math.Min(limit, 1_048_576UL);
         for (ulong i = 0; i < max; i++)
         {
-            if (!TryReadUInt16Compat(ctx, left + (i * sizeof(ushort)), out var leftUnit) ||
-                !TryReadUInt16Compat(ctx, right + (i * sizeof(ushort)), out var rightUnit))
+            if (!TryReadUInt16Compat(ctx, left + (i * WideCharSize), out var leftUnit) ||
+                !TryReadUInt16Compat(ctx, right + (i * WideCharSize), out var rightUnit))
             {
                 return false;
             }
 
-            compare = leftUnit - rightUnit;
+            compare = leftUnit == rightUnit ? 0 : leftUnit < rightUnit ? -1 : 1;
             if (compare != 0 || leftUnit == 0 || rightUnit == 0)
             {
                 return true;
@@ -2650,20 +2945,36 @@ public static class KernelMemoryCompatExports
 
     private static byte[] EncodeWideUnits(ReadOnlySpan<ushort> units)
     {
-        var bytes = new byte[units.Length * sizeof(ushort)];
+        var bytes = new byte[units.Length * WideCharSize];
         for (var i = 0; i < units.Length; i++)
         {
             BinaryPrimitives.WriteUInt16LittleEndian(
-                bytes.AsSpan(i * sizeof(ushort), sizeof(ushort)),
+                bytes.AsSpan(i * WideCharSize, WideCharSize),
                 units[i]);
         }
 
         return bytes;
     }
 
+    private static string DecodeWideUnits(ReadOnlySpan<ushort> units)
+    {
+        if (units.IsEmpty)
+        {
+            return string.Empty;
+        }
+
+        return new string(MemoryMarshal.Cast<ushort, char>(units));
+    }
+
+    private static bool TryConvertWideScalarToString(ushort scalar, out string text)
+    {
+        text = ((char)scalar).ToString();
+        return true;
+    }
+
     private static byte[] EncodeWideUnitsWithTerminator(ReadOnlySpan<ushort> units)
     {
-        var bytes = new byte[(units.Length + 1) * sizeof(ushort)];
+        var bytes = new byte[(units.Length + 1) * WideCharSize];
         EncodeWideUnits(units).CopyTo(bytes, 0);
         return bytes;
     }
@@ -3499,6 +3810,202 @@ public static class KernelMemoryCompatExports
         Span<byte> bytes = stackalloc byte[sizeof(int)];
         BitConverter.TryWriteBytes(bytes, value);
         return ctx.Memory.TryWrite(address, bytes);
+    }
+
+    private static bool TryWriteOpenDescriptorStat(CpuContext ctx, int fd, ulong statAddress)
+    {
+        if (fd is 0 or 1 or 2)
+        {
+            var now = DateTime.UtcNow;
+            return TryWriteKernelStat(ctx, statAddress, isDirectory: false, size: 0, now, now, now, $"stdio:{fd}");
+        }
+
+        string? hostPath = null;
+        bool isDirectory = false;
+        lock (_fdGate)
+        {
+            if (_openDirectories.TryGetValue(fd, out var directory))
+            {
+                hostPath = directory.Path;
+                isDirectory = true;
+            }
+            else if (_openFiles.TryGetValue(fd, out var stream))
+            {
+                hostPath = stream.Name;
+            }
+        }
+
+        return !string.IsNullOrWhiteSpace(hostPath) && TryWriteHostPathStat(ctx, statAddress, hostPath!, isDirectory);
+    }
+
+    private static bool TryWriteHostPathStat(CpuContext ctx, ulong statAddress, string hostPath)
+    {
+        var isDirectory = Directory.Exists(hostPath);
+        if (!isDirectory && !File.Exists(hostPath))
+        {
+            return false;
+        }
+
+        return TryWriteHostPathStat(ctx, statAddress, hostPath, isDirectory);
+    }
+
+    private static bool TryWriteHostPathStat(CpuContext ctx, ulong statAddress, string hostPath, bool isDirectory)
+    {
+        if (isDirectory)
+        {
+            if (!Directory.Exists(hostPath))
+            {
+                return false;
+            }
+        }
+        else if (!File.Exists(hostPath))
+        {
+            return false;
+        }
+
+        try
+        {
+            var lastAccessUtc = File.GetLastAccessTimeUtc(hostPath);
+            var lastWriteUtc = File.GetLastWriteTimeUtc(hostPath);
+            var creationUtc = File.GetCreationTimeUtc(hostPath);
+            var size = isDirectory ? 65536L : new FileInfo(hostPath).Length;
+            return TryWriteKernelStat(ctx, statAddress, isDirectory, size, lastAccessUtc, lastWriteUtc, creationUtc, hostPath);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TryWriteKernelStat(
+        CpuContext ctx,
+        ulong statAddress,
+        bool isDirectory,
+        long size,
+        DateTime lastAccessUtc,
+        DateTime lastWriteUtc,
+        DateTime creationUtc,
+        string inodeSeed)
+    {
+        Span<byte> payload = stackalloc byte[KernelStatSize];
+        payload.Clear();
+
+        var seedBytes = Encoding.UTF8.GetBytes(inodeSeed);
+        BinaryPrimitives.WriteUInt32LittleEndian(payload[KernelStatStDevOffset..], 0);
+        BinaryPrimitives.WriteUInt32LittleEndian(payload[KernelStatStInoOffset..], ComputeDirectoryEntryHash(seedBytes));
+        BinaryPrimitives.WriteUInt16LittleEndian(payload[KernelStatStModeOffset..], isDirectory ? KernelStatModeDirectory : KernelStatModeRegular);
+        BinaryPrimitives.WriteUInt16LittleEndian(payload[KernelStatStNlinkOffset..], 1);
+        BinaryPrimitives.WriteUInt32LittleEndian(payload[KernelStatStUidOffset..], 0);
+        BinaryPrimitives.WriteUInt32LittleEndian(payload[KernelStatStGidOffset..], 0);
+        BinaryPrimitives.WriteUInt32LittleEndian(payload[KernelStatStRdevOffset..], 0);
+        WriteKernelTimespec(payload[KernelStatStAtimOffset..], lastAccessUtc);
+        WriteKernelTimespec(payload[KernelStatStMtimOffset..], lastWriteUtc);
+        WriteKernelTimespec(payload[KernelStatStCtimOffset..], lastWriteUtc);
+        BinaryPrimitives.WriteInt64LittleEndian(payload[KernelStatStSizeOffset..], size);
+        BinaryPrimitives.WriteInt64LittleEndian(payload[KernelStatStBlocksOffset..], isDirectory ? 128 : (size + 511) / 512);
+        BinaryPrimitives.WriteUInt32LittleEndian(payload[KernelStatStBlksizeOffset..], isDirectory ? 65536U : 512U);
+        BinaryPrimitives.WriteUInt32LittleEndian(payload[KernelStatStFlagsOffset..], 0);
+        BinaryPrimitives.WriteUInt32LittleEndian(payload[KernelStatStGenOffset..], 0);
+        BinaryPrimitives.WriteInt32LittleEndian(payload[KernelStatStLspareOffset..], 0);
+        WriteKernelTimespec(payload[KernelStatStBirthtimOffset..], creationUtc);
+        return TryWriteCompat(ctx, statAddress, payload);
+    }
+
+    private static void WriteKernelTimespec(Span<byte> destination, DateTime utcTime)
+    {
+        var timestamp = utcTime.Kind == DateTimeKind.Utc ? utcTime : utcTime.ToUniversalTime();
+        var dto = new DateTimeOffset(timestamp);
+        BinaryPrimitives.WriteInt64LittleEndian(destination, dto.ToUnixTimeSeconds());
+        var ticksWithinSecond = timestamp.Ticks % TimeSpan.TicksPerSecond;
+        BinaryPrimitives.WriteInt64LittleEndian(destination[sizeof(long)..], ticksWithinSecond * 100);
+    }
+
+    private static int KernelGetdirentriesCore(CpuContext ctx, int fd, ulong bufferAddress, int requested, ulong basePointerAddress)
+    {
+        if (fd < 0 || bufferAddress == 0 || requested < 512)
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+        }
+
+        OpenDirectory? directory;
+        lock (_fdGate)
+        {
+            _openDirectories.TryGetValue(fd, out directory);
+        }
+
+        if (directory is null)
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
+        }
+
+        var currentIndex = directory.NextIndex;
+        if (basePointerAddress != 0 && !TryWriteUInt64Compat(ctx, basePointerAddress, (ulong)currentIndex))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        if (currentIndex >= directory.Entries.Length)
+        {
+            ctx[CpuRegister.Rax] = 0;
+            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+        }
+
+        var entryName = directory.Entries[currentIndex];
+        directory.NextIndex = currentIndex + 1;
+
+        var entryBytes = Encoding.UTF8.GetBytes(entryName);
+        var nameLength = Math.Min(entryBytes.Length, 255);
+        var entryPath = Path.Combine(directory.Path, entryName);
+        var entryType = Directory.Exists(entryPath) ? (byte)4 : (byte)8;
+
+        var payload = new byte[512];
+        BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(0, sizeof(uint)), ComputeDirectoryEntryHash(entryBytes.AsSpan(0, nameLength)));
+        BinaryPrimitives.WriteUInt16LittleEndian(payload.AsSpan(4, sizeof(ushort)), 512);
+        payload[6] = entryType;
+        payload[7] = unchecked((byte)nameLength);
+        entryBytes.AsSpan(0, nameLength).CopyTo(payload.AsSpan(8));
+
+        if (!TryWriteCompat(ctx, bufferAddress, payload))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        ctx[CpuRegister.Rax] = 512;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    private static string[] EnumerateDirectoryEntries(string hostPath)
+    {
+        return Directory.EnumerateFileSystemEntries(hostPath)
+            .Select(Path.GetFileName)
+            .Where(static name => !string.IsNullOrEmpty(name))
+            .OrderBy(static name => name, StringComparer.OrdinalIgnoreCase)
+            .ToArray()!;
+    }
+
+    private static uint ComputeDirectoryEntryHash(ReadOnlySpan<byte> utf8Name)
+    {
+        const uint offsetBasis = 2166136261;
+        const uint prime = 16777619;
+
+        var hash = offsetBasis;
+        for (var i = 0; i < utf8Name.Length; i++)
+        {
+            hash ^= utf8Name[i];
+            hash *= prime;
+        }
+
+        return hash;
+    }
+
+    private static void LogOpenTrace(string message)
+    {
+        if (!string.Equals(Environment.GetEnvironmentVariable("SHARPEMU_LOG_OPEN"), "1", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        Console.Error.WriteLine($"[LOADER][TRACE] {message}");
     }
 
     private static ulong AlignUp(ulong value, ulong alignment)
