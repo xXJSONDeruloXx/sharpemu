@@ -292,6 +292,25 @@ public static class VideoOutExports
     public static int SubmitFlipFromAgc(CpuContext ctx, int handle, int bufferIndex, int flipMode, long flipArg) =>
         SubmitFlip(ctx, handle, bufferIndex, flipMode, flipArg);
 
+    internal static void SubmitHostRgbaFrame(ReadOnlySpan<byte> rgbaFrame, uint width, uint height)
+    {
+        if (rgbaFrame.Length != checked((int)(width * height * 4)))
+        {
+            return;
+        }
+
+        var bgraFrame = new byte[rgbaFrame.Length];
+        for (var offset = 0; offset < rgbaFrame.Length; offset += 4)
+        {
+            bgraFrame[offset + 0] = rgbaFrame[offset + 2];
+            bgraFrame[offset + 1] = rgbaFrame[offset + 1];
+            bgraFrame[offset + 2] = rgbaFrame[offset + 0];
+            bgraFrame[offset + 3] = rgbaFrame[offset + 3];
+        }
+
+        VulkanVideoPresenter.Submit(bgraFrame, width, height);
+    }
+
     internal static bool TryGetDisplayBufferInfo(int handle, int bufferIndex, out DisplayBufferInfo info)
     {
         info = default;
@@ -608,7 +627,13 @@ public static class VideoOutExports
             flipEvents = new List<FlipEventRegistration>(port.FlipEvents);
         }
 
-        _ = TryDumpFrame(ctx, port, bufferIndex, flipMode, flipArg);
+        if (string.Equals(
+                Environment.GetEnvironmentVariable("SHARPEMU_DUMP_VIDEOOUT"),
+                "1",
+                StringComparison.Ordinal))
+        {
+            _ = TryDumpFrame(ctx, port, bufferIndex, flipMode, flipArg);
+        }
 
         foreach (var flipEvent in flipEvents)
         {
