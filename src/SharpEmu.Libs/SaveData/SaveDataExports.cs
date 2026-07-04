@@ -400,7 +400,7 @@ public static class SaveDataExports
     {
         var configured = Environment.GetEnvironmentVariable("SHARPEMU_SAVEDATA_DIR");
         var root = string.IsNullOrWhiteSpace(configured)
-            ? Path.Combine(Environment.CurrentDirectory, "user", "savedata")
+            ? Path.Combine(AppContext.BaseDirectory, "user", "savedata")
             : configured;
         return Path.GetFullPath(root);
     }
