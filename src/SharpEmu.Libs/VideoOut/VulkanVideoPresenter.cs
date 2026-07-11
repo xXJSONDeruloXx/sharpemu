@@ -1253,7 +1253,7 @@ internal static unsafe class VulkanVideoPresenter
             var applicationName = (byte*)SilkMarshal.StringToPtr("SharpEmu");
             var enableValidation = Environment.GetEnvironmentVariable("SHARPEMU_VK_VALIDATION") == "1";
             byte* validationLayerName = null;
-            
+
             try
             {
                 var applicationInfo = new ApplicationInfo
@@ -1313,7 +1313,7 @@ internal static unsafe class VulkanVideoPresenter
                     {
                         throw new InvalidOperationException("VK_KHR_surface is unavailable.");
                     }
-                    
+
                     if (validationLayerName is not null && _vk.TryGetInstanceExtension(_instance, out ExtDebugUtils debugUtils))
                     {
                         _debugUtils = debugUtils;
@@ -1383,7 +1383,7 @@ internal static unsafe class VulkanVideoPresenter
             Check(debugUtils.CreateDebugUtilsMessenger(_instance, &messengerInfo, null, out _debugMessenger),
                 "vkCreateDebugUtilsMessengerEXT");
         }
-        
+
         private static unsafe uint DebugCallback(
             DebugUtilsMessageSeverityFlagsEXT severity,
             DebugUtilsMessageTypeFlagsEXT type,
