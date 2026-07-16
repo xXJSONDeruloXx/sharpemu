@@ -90,21 +90,13 @@ release includes the MoltenVK Vulkan implementation.
 
 ## Games Tested
 
-* **Demon's Souls Remake**
-  * [Demon's Souls [PPSA01341]](https://github.com/sharpemu/sharpemu/issues/2)
-  * Demon's Souls is now video loop. Shaders are ready to be converted to SPIR-V/Vulkan. We are continuing our work on this.
-  ![DeS videoOut submit first frame](./.github/images/des-videoout-shaders.jpg)
+|               Demons Souls Remake                   |                     Dreaming Sarah                         |
+| :-----------------------------------------------------------: | :--------------------------------------------------------------------------------------------: |
+| ![Bloodborne screenshot](./.github/images/demons-souls.jpg) | ![Dreaming Sarah](./.github/images/dreaming-sarah.jpg) |
 
-* **Poppy Playtime Chapter 1**
-  * [Poppy Playtime Chapter 1 [PPSA20591]](https://github.com/sharpemu/sharpemu/issues/3)
-
-* **SILENT HILL: The Short Message**
-  * [SILENT HILL: The Short Message [PPSA10112]](https://github.com/sharpemu/sharpemu/issues/4)
-
-* **Dreaming Sarah**
-  * [Dreaming Sarah [PPSA02929]](https://github.com/sharpemu/sharpemu/issues/9)
-  * Real texture rendering for this game;
-  ![Splash texture](./.github/images/dreaming-sarah.jpg)
+|                  Void Terrarium                     |                 Dead Cells                    |
+| :------------------------------------------------------------------------: | :------------------------------------------------------------------: |
+| ![Void Terrarium](./.github/images/void-terrarium.jpg) | ![Dead Cells](./.github/images/dead-cells.jpg) |
 
 
 > [!IMPORTANT]  
