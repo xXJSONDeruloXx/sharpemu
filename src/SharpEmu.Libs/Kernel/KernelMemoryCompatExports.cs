@@ -2328,6 +2328,37 @@ public static partial class KernelMemoryCompatExports
     }
 
     [SysAbiExport(
+        Nid = "smIj7eqzZE8",
+        ExportName = "clock_getres",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int ClockGetres(CpuContext ctx)
+    {
+        var timespecAddress = ctx[CpuRegister.Rsi];
+
+        // POSIX allows a null resolution pointer: the call then only validates
+        // the clock id, which every id a title passes here does.
+        if (timespecAddress == 0)
+        {
+            ctx[CpuRegister.Rax] = 0;
+            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+        }
+
+        // clock_gettime above is backed by DateTimeOffset.UtcNow, whose tick is
+        // 100 ns, so that is the honest resolution to report rather than the 1 ns
+        // a caller might otherwise assume it can rely on.
+        const ulong ResolutionNanoseconds = 100;
+        if (!ctx.TryWriteUInt64(timespecAddress, 0) ||
+            !ctx.TryWriteUInt64(timespecAddress + sizeof(long), ResolutionNanoseconds))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
         Nid = "vNe1w4diLCs",
         ExportName = "__tls_get_addr",
         Target = Generation.Gen4 | Generation.Gen5,
@@ -3396,6 +3427,47 @@ public static partial class KernelMemoryCompatExports
         }
 
         return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
+    }
+
+    /// <summary>
+    /// POSIX alias of <see cref="KernelMprotect"/>; identical (addr, len, prot)
+    /// argument order. Imported by libcohtml, whose embedded V8 changes page
+    /// permissions through this name when moving JIT pages between writable and
+    /// executable.
+    /// </summary>
+    [SysAbiExport(
+        Nid = "YQOfxL4QfeU",
+        ExportName = "mprotect",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int PosixMprotect(CpuContext ctx) => KernelMprotect(ctx);
+
+    /// <summary>
+    /// POSIX alias of <see cref="KernelMunmap"/>; identical (addr, len) argument
+    /// order.
+    /// </summary>
+    [SysAbiExport(
+        Nid = "UqDGjXA5yUM",
+        ExportName = "munmap",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int PosixMunmap(CpuContext ctx) => KernelMunmap(ctx);
+
+    /// <summary>
+    /// Reports the 16 KiB page granularity this backend maps and aligns against
+    /// (<see cref="OrbisPageSize"/>), not the host's 4 KiB. An allocator that
+    /// rounded to the host value would hand back sub-page offsets that every
+    /// mapping call here then rejects for misalignment.
+    /// </summary>
+    [SysAbiExport(
+        Nid = "k+AXqu2-eBc",
+        ExportName = "getpagesize",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int PosixGetPageSize(CpuContext ctx)
+    {
+        ctx[CpuRegister.Rax] = OrbisPageSize;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 
     [SysAbiExport(
@@ -5658,6 +5730,74 @@ public static partial class KernelMemoryCompatExports
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Inserts <paramref name="replacement"/> into the tracked-region table,
+    /// carving it out of any regions it overlaps and preserving the parts of
+    /// those regions that fall outside it.
+    /// </summary>
+    /// <remarks>
+    /// The table is a SortedList keyed by start address, so assigning directly
+    /// destroys any existing entry that happens to share a start address. That
+    /// silently discarded enclosing reservations: a title reserves a large range
+    /// and then commits a small mapping at the same base, and the record of
+    /// everything past the small mapping disappears — leaving sceKernelVirtualQuery
+    /// unable to find memory the guest legitimately owns.
+    ///
+    /// Carving also keeps the table non-overlapping. Previously a new region
+    /// starting inside an existing one produced two overlapping entries, which
+    /// the ordered scan in TryFindVirtualQueryRegionLocked is not written to
+    /// expect.
+    /// </remarks>
+    private static void ReplaceMappedRegionRangeLocked(MappedRegion replacement)
+    {
+        if (replacement.Length == 0 ||
+            !TryAddU64(replacement.Address, replacement.Length, out var replacementEnd))
+        {
+            _mappedRegions[replacement.Address] = replacement;
+            return;
+        }
+
+        var start = replacement.Address;
+        List<MappedRegion>? overlapping = null;
+        foreach (var region in _mappedRegions.Values)
+        {
+            if (region.Length == 0 ||
+                !TryAddU64(region.Address, region.Length, out var regionEnd))
+            {
+                continue;
+            }
+
+            if (region.Address < replacementEnd && regionEnd > start)
+            {
+                (overlapping ??= []).Add(region);
+            }
+        }
+
+        if (overlapping is not null)
+        {
+            foreach (var region in overlapping)
+            {
+                _mappedRegions.Remove(region.Address);
+            }
+
+            foreach (var region in overlapping)
+            {
+                var regionEnd = region.Address + region.Length;
+                if (region.Address < start)
+                {
+                    AddMappedRegionSliceLocked(region, region.Address, start, region.Protection);
+                }
+
+                if (regionEnd > replacementEnd)
+                {
+                    AddMappedRegionSliceLocked(region, replacementEnd, regionEnd, region.Protection);
+                }
+            }
+        }
+
+        _mappedRegions[start] = replacement;
     }
 
     private static void AddMappedRegionSliceLocked(
