@@ -10,6 +10,7 @@ public static class NpWebApi2Exports
     private const int NpWebApi2ErrorInvalidArgument = unchecked((int)0x80553402);
 
     private static int _initialized;
+    private static int _nextUserContextHandle = 1;
 
     [SysAbiExport(
         Nid = "+o9816YQhqQ",
@@ -50,10 +51,23 @@ public static class NpWebApi2Exports
         LibraryName = "libSceNpWebApi2")]
     public static int NpWebApi2CreateUserContext(CpuContext ctx)
     {
-        // No PSN backend: refuse user-context creation so the title's online
-        // layer backs off instead of driving a half-created context handle.
-        TraceNpWebApi2("create-user-context", unchecked((int)ctx[CpuRegister.Rdi]), ctx[CpuRegister.Rsi]);
-        return ctx.SetReturn(NpWebApi2ErrorInvalidArgument);
+        // Titles often probe this path during online bootstrap. Returning a
+        // fake context keeps them moving even without a PSN backend.
+        var contextAddress = ctx[CpuRegister.Rdi];
+        var poolSize = ctx[CpuRegister.Rsi];
+        TraceNpWebApi2("create-user-context", unchecked((int)contextAddress), poolSize);
+
+        if (contextAddress != 0)
+        {
+            var handle = unchecked((uint)Interlocked.Increment(ref _nextUserContextHandle));
+            if (!ctx.TryWriteUInt32(contextAddress, handle))
+            {
+                return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            }
+        }
+
+        Interlocked.Exchange(ref _initialized, 1);
+        return ctx.SetReturn(0);
     }
 
     [SysAbiExport(

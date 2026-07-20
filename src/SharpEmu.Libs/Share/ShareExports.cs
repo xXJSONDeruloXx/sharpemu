@@ -62,6 +62,17 @@ public static class ShareExports
         return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_OK);
     }
 
+    [SysAbiExport(
+        Nid = "Sygnk9dr5WQ",
+        ExportName = "sceShareRegisterContentEventCallback",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceShareUtility")]
+    public static int ShareRegisterContentEventCallback(CpuContext ctx)
+    {
+        _ = ctx;
+        return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_OK);
+    }
+
     private static bool TryReadNullTerminatedUtf8(CpuContext ctx, ulong address, int maxLength, out string value)
     {
         Span<byte> bytes = stackalloc byte[maxLength];

@@ -779,6 +779,28 @@ public static class SaveDataExports
         }
     }
 
+    [SysAbiExport(
+        Nid = "WAzWTZm1H+I",
+        ExportName = "sceSaveDataTransferringMount",
+        Target = Generation.Gen5,
+        LibraryName = "libSceSaveData")]
+    public static int SaveDataTransferringMount(CpuContext ctx)
+    {
+        _ = ctx;
+        return SetReturn(ctx, 0);
+    }
+
+    [SysAbiExport(
+        Nid = "RjMlsR8EXrw",
+        ExportName = "sceSaveDataTransferringMountPs4",
+        Target = Generation.Gen5,
+        LibraryName = "libSceSaveData")]
+    public static int SaveDataTransferringMountPs4(CpuContext ctx)
+    {
+        _ = ctx;
+        return SetReturn(ctx, 0);
+    }
+
     private static int _nextTransactionResource;
     [SysAbiExport(
         Nid = "gjRZNnw0JPE",
