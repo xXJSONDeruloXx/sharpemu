@@ -290,9 +290,20 @@ public static class JsonExports
     {
         var valueAddress = ctx[CpuRegister.Rdi];
         var element = GetValue(valueAddress);
+        TraceJsonText("Value.getType", valueAddress, element.ValueKind.ToString());
         ctx[CpuRegister.Rax] = (ulong)GetValueType(element);
         return 0;
     }
+
+    // Catalog alias NID for the same type getter.
+    #pragma warning disable SHEM004
+    [SysAbiExport(
+        Nid = "wLsJlmgEIaI",
+        ExportName = "_ZNK3sce4Json5Value7getTypeEv",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceJson")]
+    public static int ValueGetTypeAlt(CpuContext ctx) => ValueGetType(ctx);
+    #pragma warning restore SHEM004
 
     [SysAbiExport(
         Nid = "RBw+4NukeGQ",
@@ -587,6 +598,7 @@ public static class JsonExports
 
         var clone = element.Clone();
         _values[address] = new JsonValueState(clone);
+        TraceJsonText("Value.store", address, clone.ValueKind.ToString());
 
         Span<byte> mirror = stackalloc byte[ValueObjectSize];
         mirror.Clear();
