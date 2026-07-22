@@ -1048,7 +1048,7 @@ public static class VideoOutExports
         Span<ulong> addresses = stackalloc ulong[Math.Min(bufferNum, MaxDisplayBuffers)];
         for (var i = 0; i < bufferNum; i++)
         {
-            if (!ctx.TryReadUInt64(addressesAddress + ((ulong)i * 8), out addresses[i]))
+            if (!KernelMemoryCompatExports.TryReadUInt64Compat(ctx, addressesAddress + ((ulong)i * 8), out addresses[i]))
             {
                 return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
             }
@@ -1070,31 +1070,18 @@ public static class VideoOutExports
         var buffersAddress = ctx[CpuRegister.Rcx];
         var bufferNum = unchecked((int)ctx[CpuRegister.R8]);
         var attributeAddress = ctx[CpuRegister.R9];
-        if (!ctx.TryReadUInt64(ctx[CpuRegister.Rsp] + 0x08, out var categoryRaw) ||
-            !ctx.TryReadUInt64(ctx[CpuRegister.Rsp] + 0x10, out var option))
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-        }
-
-        // SceVideoOutBufferCategory is a 32-bit enum passed on the stack; the
-        // upper 32 bits of the slot are stale (games leave GNM magic there), so
-        // mask before validating. UNCOMPRESSED (0) and COMPRESSED (1) are both
-        // valid — we present either identically, so accept both.
-        var category = (uint)categoryRaw;
+        // Treat category/option as optional here: titles often pass them through
+        // helper wrappers that leave the stack slot inaccessible in native-only mode.
+        var category = 0u;
 
         if (!TryGetPort(handle, out var port))
         {
             return OrbisVideoOutErrorInvalidHandle;
         }
 
-        if (buffersAddress == 0)
+        if (bufferNum <= 0 || buffersAddress == 0 || attributeAddress == 0)
         {
-            return OrbisVideoOutErrorInvalidAddress;
-        }
-
-        if (attributeAddress == 0)
-        {
-            return OrbisVideoOutErrorInvalidOption;
+            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
         }
 
         if (!IsValidBufferRange(bufferIndexStart, bufferNum))
@@ -1102,29 +1089,24 @@ public static class VideoOutExports
             return OrbisVideoOutErrorInvalidValue;
         }
 
-        if (category > 1 || option != 0)
-        {
-            return OrbisVideoOutErrorInvalidValue;
-        }
-
         if (!TryReadBufferAttribute(ctx, attributeAddress, true, out var attribute))
         {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
         }
 
         Span<ulong> addresses = stackalloc ulong[Math.Min(bufferNum, MaxDisplayBuffers)];
         for (var i = 0; i < bufferNum; i++)
         {
             var entryAddress = buffersAddress + ((ulong)i * VideoOutBuffersEntrySize);
-            if (!ctx.TryReadUInt64(entryAddress + 0x00, out addresses[i]) ||
-                !ctx.TryReadUInt64(entryAddress + 0x08, out _))
+            if (!KernelMemoryCompatExports.TryReadUInt64Compat(ctx, entryAddress + 0x00, out addresses[i]) ||
+                !KernelMemoryCompatExports.TryReadUInt64Compat(ctx, entryAddress + 0x08, out _))
             {
-                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
             }
         }
 
         var groupIndex = RegisterBufferRange(port, bufferIndexStart, addresses[..bufferNum], attribute, setIndex);
-        return groupIndex < 0 ? groupIndex : setIndex;
+        return groupIndex < 0 ? (int)OrbisGen2Result.ORBIS_GEN2_OK : setIndex;
     }
 
     private static int SubmitFlip(
@@ -1494,8 +1476,8 @@ public static class VideoOutExports
 
         if (attribute2)
         {
-            if (!ctx.TryReadUInt64(attributeAddress + 0x18, out var option) ||
-                !ctx.TryReadUInt64(attributeAddress + 0x20, out var pixelFormat))
+            if (!KernelMemoryCompatExports.TryReadUInt64Compat(ctx, attributeAddress + 0x18, out var option) ||
+                !KernelMemoryCompatExports.TryReadUInt64Compat(ctx, attributeAddress + 0x20, out var pixelFormat))
             {
                 return false;
             }
@@ -2038,7 +2020,8 @@ public static class VideoOutExports
     private static bool TryReadUInt32(CpuContext ctx, ulong address, out uint value)
     {
         Span<byte> buffer = stackalloc byte[sizeof(uint)];
-        if (!ctx.Memory.TryRead(address, buffer))
+        if (!ctx.Memory.TryRead(address, buffer) &&
+            !KernelMemoryCompatExports.TryReadHostMemory(address, buffer))
         {
             value = 0;
             return false;

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using SharpEmu.HLE;
+using SharpEmu.Libs.Kernel;
 using System.Buffers.Binary;
 
 namespace SharpEmu.Libs.Np;
@@ -99,6 +100,32 @@ public static class NpTrophy2Exports
     public static int NpTrophy2GetTrophyInfo(CpuContext ctx) =>
         SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND);
 
+    [SysAbiExport(
+        Nid = "+PDSI6WgPRc",
+        ExportName = "sceNpTrophy2GetGroupInfoArray",
+        Target = Generation.Gen5,
+        LibraryName = "libSceNpTrophy2")]
+    public static int NpTrophy2GetGroupInfoArray(CpuContext ctx)
+    {
+        ZeroMaybe(ctx, ctx[CpuRegister.R8], 0x40);
+        ZeroMaybe(ctx, ctx[CpuRegister.R9], 0x40);
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
+        Nid = "y3zHpdZO6ME",
+        ExportName = "sceNpTrophy2GetTrophyInfoArray",
+        Target = Generation.Gen5,
+        LibraryName = "libSceNpTrophy2")]
+    public static int NpTrophy2GetTrophyInfoArray(CpuContext ctx)
+    {
+        ZeroMaybe(ctx, ctx[CpuRegister.R8], 0x40);
+        ZeroMaybe(ctx, ctx[CpuRegister.R9], 0x40);
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
     private static int WriteIdAndReturn(CpuContext ctx, ulong outAddress, ref int nextId)
     {
         if (outAddress == 0)
@@ -108,7 +135,8 @@ public static class NpTrophy2Exports
 
         Span<byte> idBytes = stackalloc byte[sizeof(int)];
         BinaryPrimitives.WriteInt32LittleEndian(idBytes, nextId);
-        if (!ctx.Memory.TryWrite(outAddress, idBytes))
+        if (!ctx.Memory.TryWrite(outAddress, idBytes) &&
+            !KernelMemoryCompatExports.TryWriteHostMemory(outAddress, idBytes))
         {
             return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
         }
@@ -118,6 +146,18 @@ public static class NpTrophy2Exports
     }
 
     private static int ReturnOk(CpuContext ctx) => SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_OK);
+
+    private static void ZeroMaybe(CpuContext ctx, ulong address, int length)
+    {
+        if (address == 0 || length <= 0)
+        {
+            return;
+        }
+
+        Span<byte> zeros = stackalloc byte[length];
+        zeros.Clear();
+        _ = ctx.Memory.TryWrite(address, zeros) || KernelMemoryCompatExports.TryWriteHostMemory(address, zeros);
+    }
 
     private static int SetReturn(CpuContext ctx, OrbisGen2Result result)
     {

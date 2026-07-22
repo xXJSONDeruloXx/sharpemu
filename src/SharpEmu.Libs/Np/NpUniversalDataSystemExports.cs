@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using SharpEmu.HLE;
+using SharpEmu.Libs.Kernel;
 using System.Buffers.Binary;
 
 namespace SharpEmu.Libs.Np;
@@ -28,7 +29,8 @@ public static class NpUniversalDataSystemExports
         }
 
         Span<byte> parameters = stackalloc byte[16];
-        return ctx.Memory.TryRead(parameterAddress, parameters)
+        return (ctx.Memory.TryRead(parameterAddress, parameters) ||
+                KernelMemoryCompatExports.TryReadHostMemory(parameterAddress, parameters))
             ? ctx.SetReturn(0, typeof(long))
             : ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT, typeof(long));
     }
@@ -48,7 +50,8 @@ public static class NpUniversalDataSystemExports
 
         Span<byte> context = stackalloc byte[sizeof(int)];
         BinaryPrimitives.WriteInt32LittleEndian(context, 1);
-        return ctx.Memory.TryWrite(contextAddress, context)
+        return (ctx.Memory.TryWrite(contextAddress, context) ||
+                KernelMemoryCompatExports.TryWriteHostMemory(contextAddress, context))
             ? ctx.SetReturn(0, typeof(long))
             : ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT, typeof(long));
     }
@@ -61,8 +64,12 @@ public static class NpUniversalDataSystemExports
     public static int NpUniversalDataSystemCreateHandle(CpuContext ctx)
     {
         var handle = Interlocked.Increment(ref _nextHandle);
-        if (ctx.TryWriteInt32(ctx[CpuRegister.Rdi], handle, checkNil: true) ||
-            ctx.TryWriteInt32(ctx[CpuRegister.Rsi], handle, checkNil: true))
+        Span<byte> handleBytes = stackalloc byte[sizeof(int)];
+        BinaryPrimitives.WriteInt32LittleEndian(handleBytes, handle);
+        if (ctx.Memory.TryWrite(ctx[CpuRegister.Rdi], handleBytes) ||
+            KernelMemoryCompatExports.TryWriteHostMemory(ctx[CpuRegister.Rdi], handleBytes) ||
+            ctx.Memory.TryWrite(ctx[CpuRegister.Rsi], handleBytes) ||
+            KernelMemoryCompatExports.TryWriteHostMemory(ctx[CpuRegister.Rsi], handleBytes))
         {
             return ctx.SetReturn(0, typeof(long));
         }
@@ -89,8 +96,10 @@ public static class NpUniversalDataSystemExports
             _createdEvents.Add(eventId);
         }
 
-        if (ctx.TryWriteInt32(ctx[CpuRegister.Rdx], eventId, checkNil: true) ||
-            ctx.TryWriteInt32(ctx[CpuRegister.Rcx], eventId, checkNil: true))
+        Span<byte> eventBytes = stackalloc byte[sizeof(int)];
+        BinaryPrimitives.WriteInt32LittleEndian(eventBytes, eventId);
+        if (KernelMemoryCompatExports.TryWriteHostMemory(ctx[CpuRegister.Rdx], eventBytes) ||
+            KernelMemoryCompatExports.TryWriteHostMemory(ctx[CpuRegister.Rcx], eventBytes))
         {
             return ctx.SetReturn(0, typeof(long));
         }
@@ -134,8 +143,10 @@ public static class NpUniversalDataSystemExports
         }
 
         Span<byte> probe = stackalloc byte[1];
-        return ctx.Memory.TryRead(propertyObjectAddress, probe) &&
-               ctx.Memory.TryRead(valueAddress, probe)
+        return (ctx.Memory.TryRead(propertyObjectAddress, probe) ||
+                KernelMemoryCompatExports.TryReadHostMemory(propertyObjectAddress, probe)) &&
+               (ctx.Memory.TryRead(valueAddress, probe) ||
+                KernelMemoryCompatExports.TryReadHostMemory(valueAddress, probe))
             ? ctx.SetReturn(0, typeof(long))
             : ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT, typeof(long));
     }
@@ -155,12 +166,15 @@ public static class NpUniversalDataSystemExports
         }
 
         Span<byte> probe = stackalloc byte[1];
-        if (!ctx.Memory.TryRead(propertyObjectAddress, probe))
+        if (!ctx.Memory.TryRead(propertyObjectAddress, probe) &&
+            !KernelMemoryCompatExports.TryReadHostMemory(propertyObjectAddress, probe))
         {
             return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT, typeof(long));
         }
 
-        if (valueAddress != 0 && !ctx.Memory.TryRead(valueAddress, probe))
+        if (valueAddress != 0 &&
+            !ctx.Memory.TryRead(valueAddress, probe) &&
+            !KernelMemoryCompatExports.TryReadHostMemory(valueAddress, probe))
         {
             return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT, typeof(long));
         }

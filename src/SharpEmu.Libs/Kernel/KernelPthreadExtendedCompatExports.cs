@@ -463,7 +463,7 @@ public static class KernelPthreadExtendedCompatExports
         }
 
         var syntheticHandle = AllocateSyntheticHandle(SyntheticPthreadAttrHandleBase, ref _nextSyntheticPthreadAttrHandleId);
-        if (!ctx.TryWriteUInt64(attrAddress, syntheticHandle))
+        if (!KernelMemoryCompatExports.TryWriteUInt64Compat(ctx, attrAddress, syntheticHandle))
         {
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
         }
@@ -511,7 +511,7 @@ public static class KernelPthreadExtendedCompatExports
             }
         }
 
-        _ = ctx.TryWriteUInt64(attrAddress, 0);
+        _ = KernelMemoryCompatExports.TryWriteUInt64Compat(ctx, attrAddress, 0);
         ctx[CpuRegister.Rax] = 0;
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }

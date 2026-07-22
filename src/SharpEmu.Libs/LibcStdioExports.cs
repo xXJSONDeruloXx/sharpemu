@@ -46,6 +46,10 @@ public static class LibcStdioExports
 
     private static readonly object _ctypeTableGate = new();
     private static nint _ctypeTableBase;
+    private static readonly object _tolowerTableGate = new();
+    private static nint _tolowerTableBase;
+    private static readonly object _toupperTableGate = new();
+    private static nint _toupperTableBase;
 
     [SysAbiExport(
         Nid = "xeYO4u7uyJ0",
@@ -223,6 +227,78 @@ public static class LibcStdioExports
     }
 
     [SysAbiExport(
+        Nid = "vYWK2Pz8vGE",
+        ExportName = "_ZSt7_FiopenPKcNSt5_IosbIiE9_OpenmodeEi",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libc")]
+    public static int Fiopen(CpuContext ctx)
+    {
+        var pathAddress = ctx[CpuRegister.Rdi];
+        var openMode = unchecked((uint)ctx[CpuRegister.Rsi]);
+
+        if (pathAddress == 0 ||
+            !KernelMemoryCompatExports.TryReadNullTerminatedUtf8(ctx, pathAddress, MaxPathLength, out var guestPath))
+        {
+            ctx[CpuRegister.Rax] = 0;
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+        }
+
+        var mode = BuildFiopenMode(openMode);
+        if (!TryParseFopenMode(mode, out var fileMode, out var fileAccess))
+        {
+            ctx[CpuRegister.Rax] = 0;
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+        }
+
+        var hostPath = KernelMemoryCompatExports.ResolveGuestPath(guestPath);
+        if (fileAccess != FileAccess.Read && KernelMemoryCompatExports.IsReadOnlyGuestMutationPath(guestPath))
+        {
+            ctx[CpuRegister.Rax] = 0;
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_PERMISSION_DENIED;
+        }
+
+        try
+        {
+            if (fileAccess != FileAccess.Read)
+            {
+                var parentDirectory = Path.GetDirectoryName(hostPath);
+                if (!string.IsNullOrWhiteSpace(parentDirectory))
+                {
+                    Directory.CreateDirectory(parentDirectory);
+                }
+            }
+
+            var stream = new FileStream(hostPath, fileMode, fileAccess, FileShare.ReadWrite);
+            if (mode.StartsWith('a') && fileAccess == FileAccess.ReadWrite)
+            {
+                stream.Seek(0, SeekOrigin.End);
+            }
+
+            if (!KernelMemoryCompatExports.TryAllocateHleData(
+                    ctx,
+                    GuestFileObjectSize,
+                    alignment: 0x10,
+                    out var handle))
+            {
+                stream.Dispose();
+                ctx[CpuRegister.Rax] = 0;
+                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_TRY_AGAIN;
+            }
+
+            _fileHandles[handle] = stream;
+            ctx[CpuRegister.Rax] = handle;
+            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            ctx[CpuRegister.Rax] = 0;
+            return ex is UnauthorizedAccessException
+                ? (int)OrbisGen2Result.ORBIS_GEN2_ERROR_PERMISSION_DENIED
+                : (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
+        }
+    }
+
+    [SysAbiExport(
         Nid = "lbB+UlZqVG0",
         ExportName = "fread",
         Target = Generation.Gen4 | Generation.Gen5,
@@ -261,7 +337,8 @@ public static class LibcStdioExports
                     break;
                 }
 
-                if (!ctx.Memory.TryWrite(destination + totalRead, buffer.AsSpan(0, read)))
+                if (!ctx.Memory.TryWrite(destination + totalRead, buffer.AsSpan(0, read)) &&
+                    !KernelMemoryCompatExports.TryWriteHostMemory(destination + totalRead, buffer.AsSpan(0, read)))
                 {
                     ctx[CpuRegister.Rax] = totalRead / elementSize;
                     return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
@@ -337,7 +414,8 @@ public static class LibcStdioExports
             buffer.AsSpan(0, count).CopyTo(withNul);
             withNul[count] = 0;
 
-            if (!ctx.Memory.TryWrite(destination, withNul))
+            if (!ctx.Memory.TryWrite(destination, withNul) &&
+                !KernelMemoryCompatExports.TryWriteHostMemory(destination, withNul))
             {
                 ctx[CpuRegister.Rax] = 0;
                 return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
@@ -503,7 +581,8 @@ public static class LibcStdioExports
             while (totalWritten < totalRequested)
             {
                 var request = (int)Math.Min((ulong)buffer.Length, totalRequested - totalWritten);
-                if (!ctx.Memory.TryRead(source + totalWritten, buffer.AsSpan(0, request)))
+                if (!ctx.Memory.TryRead(source + totalWritten, buffer.AsSpan(0, request)) &&
+                    !KernelMemoryCompatExports.TryReadHostMemory(source + totalWritten, buffer.AsSpan(0, request)))
                 {
                     ctx[CpuRegister.Rax] = totalWritten / elementSize;
                     return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
@@ -716,6 +795,28 @@ public static class LibcStdioExports
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 
+    [SysAbiExport(
+        Nid = "1uJgoVq3bQU",
+        ExportName = "_Getptolower",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libc")]
+    public static int GetPtolower(CpuContext ctx)
+    {
+        ctx[CpuRegister.Rax] = unchecked((ulong)EnsureTolowerTable());
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
+        Nid = "rcQCUr0EaRU",
+        ExportName = "_Getptoupper",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libc")]
+    public static int GetPtoupper(CpuContext ctx)
+    {
+        ctx[CpuRegister.Rax] = unchecked((ulong)EnsureToupperTable());
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
     private static unsafe nint EnsureCtypeTable()
     {
         lock (_ctypeTableGate)
@@ -737,6 +838,50 @@ public static class LibcStdioExports
             // guest must point at the c == 0 entry, not the start of the allocation.
             _ctypeTableBase = storage - (CtypeTableLowerBound * sizeof(ushort));
             return _ctypeTableBase;
+        }
+    }
+
+    private static unsafe nint EnsureTolowerTable()
+    {
+        lock (_tolowerTableGate)
+        {
+            if (_tolowerTableBase != 0)
+            {
+                return _tolowerTableBase;
+            }
+
+            var storage = Marshal.AllocHGlobal(CtypeTableEntryCount * sizeof(ushort));
+            var entries = new Span<ushort>((void*)storage, CtypeTableEntryCount);
+            for (var i = 0; i < CtypeTableEntryCount; i++)
+            {
+                var c = i + CtypeTableLowerBound;
+                entries[i] = c is >= 0 and <= 0x7F ? (ushort)char.ToLowerInvariant((char)c) : (ushort)c;
+            }
+
+            _tolowerTableBase = storage - (CtypeTableLowerBound * sizeof(ushort));
+            return _tolowerTableBase;
+        }
+    }
+
+    private static unsafe nint EnsureToupperTable()
+    {
+        lock (_toupperTableGate)
+        {
+            if (_toupperTableBase != 0)
+            {
+                return _toupperTableBase;
+            }
+
+            var storage = Marshal.AllocHGlobal(CtypeTableEntryCount * sizeof(ushort));
+            var entries = new Span<ushort>((void*)storage, CtypeTableEntryCount);
+            for (var i = 0; i < CtypeTableEntryCount; i++)
+            {
+                var c = i + CtypeTableLowerBound;
+                entries[i] = c is >= 0 and <= 0x7F ? (ushort)char.ToUpperInvariant((char)c) : (ushort)c;
+            }
+
+            _toupperTableBase = storage - (CtypeTableLowerBound * sizeof(ushort));
+            return _toupperTableBase;
         }
     }
 
@@ -766,6 +911,31 @@ public static class LibcStdioExports
         if (isPunct) flags |= CtypePunct;
         if (isControl) flags |= CtypeControl;
         return flags;
+    }
+
+    private static string BuildFiopenMode(uint openMode)
+    {
+        var read = (openMode & 0x08) != 0;
+        var write = (openMode & 0x10) != 0;
+        var append = (openMode & 0x01) != 0;
+        var plus = read && write;
+
+        if (append)
+        {
+            return plus ? "a+" : "a";
+        }
+
+        if (write)
+        {
+            return plus ? "w+" : "w";
+        }
+
+        if (read)
+        {
+            return plus ? "r+" : "r";
+        }
+
+        return "r";
     }
 
     private static bool TryParseFopenMode(string mode, out FileMode fileMode, out FileAccess fileAccess)

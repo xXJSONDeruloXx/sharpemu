@@ -1430,6 +1430,31 @@ public static partial class KernelMemoryCompatExports
     }
 
     [SysAbiExport(
+        Nid = "YQ0navp+YIc",
+        ExportName = "puts",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libc")]
+    public static int Puts(CpuContext ctx)
+    {
+        var textAddress = ctx[CpuRegister.Rdi];
+        if (textAddress == 0)
+        {
+            ctx[CpuRegister.Rax] = unchecked((ulong)(-1L));
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+        }
+
+        if (!TryReadNullTerminatedUtf8(ctx, textAddress, MaxGuestStringLength, out var text))
+        {
+            ctx[CpuRegister.Rax] = unchecked((ulong)(-1L));
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        Console.Out.WriteLine(text);
+        ctx[CpuRegister.Rax] = unchecked((ulong)(text.Length + 1));
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
         Nid = "6c3rCVE-fTU",
         ExportName = "_open",
         Target = Generation.Gen4 | Generation.Gen5,
@@ -3003,7 +3028,7 @@ public static partial class KernelMemoryCompatExports
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
         }
 
-        if (!ctx.TryReadUInt64(inOutAddressPointer, out var requestedAddress))
+        if (!TryReadUInt64Compat(ctx, inOutAddressPointer, out var requestedAddress))
         {
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
         }
@@ -3100,7 +3125,7 @@ public static partial class KernelMemoryCompatExports
                 DirectStart: directMemoryStart);
         }
 
-        if (!ctx.TryWriteUInt64(inOutAddressPointer, mappedAddress))
+        if (!TryWriteUInt64Compat(ctx, inOutAddressPointer, mappedAddress))
         {
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
         }
@@ -3140,7 +3165,7 @@ public static partial class KernelMemoryCompatExports
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
         }
 
-        if (!ctx.TryReadUInt64(inOutAddressPointer, out var requestedAddress))
+        if (!TryReadUInt64Compat(ctx, inOutAddressPointer, out var requestedAddress))
         {
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
         }
@@ -3192,7 +3217,7 @@ public static partial class KernelMemoryCompatExports
                 DirectStart: 0);
         }
 
-        if (!ctx.TryWriteUInt64(inOutAddressPointer, mappedAddress))
+        if (!TryWriteUInt64Compat(ctx, inOutAddressPointer, mappedAddress))
         {
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
         }
@@ -3810,13 +3835,13 @@ public static partial class KernelMemoryCompatExports
         {
             var maxWritable = (int)Math.Min((ulong)int.MaxValue, bufferSize - 1);
             var copyLength = Math.Min(maxWritable, outputBytes.Length);
-            if (copyLength > 0 && !ctx.Memory.TryWrite(destination, outputBytes[..copyLength]))
+            if (copyLength > 0 && !TryWriteCompat(ctx, destination, outputBytes[..copyLength]))
             {
                 return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
             }
 
             Span<byte> nullTerminator = stackalloc byte[1];
-            if (!ctx.Memory.TryWrite(destination + (ulong)copyLength, nullTerminator))
+            if (!TryWriteCompat(ctx, destination + (ulong)copyLength, nullTerminator))
             {
                 return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
             }
@@ -5332,7 +5357,7 @@ public static partial class KernelMemoryCompatExports
                 normalized.StartsWith("/app0/", StringComparison.OrdinalIgnoreCase));
     }
 
-    private static bool TryReadCString(CpuContext ctx, ulong address, ulong maxLength, out byte[] bytes)
+    internal static bool TryReadCString(CpuContext ctx, ulong address, ulong maxLength, out byte[] bytes)
     {
         return TryReadBytesUntilNull(ctx, address, maxLength, 1_048_576, out bytes);
     }
@@ -6490,7 +6515,7 @@ public static partial class KernelMemoryCompatExports
         return highWaterMark;
     }
 
-    private static unsafe bool TryReadHostMemory(ulong address, Span<byte> destination)
+    internal static unsafe bool TryReadHostMemory(ulong address, Span<byte> destination)
     {
         if (destination.IsEmpty || !IsHostRangeAccessible(address, (ulong)destination.Length, writeAccess: false))
         {
@@ -6853,7 +6878,7 @@ public static partial class KernelMemoryCompatExports
         return value != 0 && (value & (value - 1)) == 0;
     }
 
-    private static unsafe bool TryWriteHostMemory(ulong address, ReadOnlySpan<byte> source)
+    internal static unsafe bool TryWriteHostMemory(ulong address, ReadOnlySpan<byte> source)
     {
         if (source.IsEmpty || !IsHostRangeAccessible(address, (ulong)source.Length, writeAccess: true))
         {
@@ -7490,6 +7515,13 @@ public static partial class KernelMemoryCompatExports
         var rendered = FormatStringFromVarArgs(ctx, format, firstGpArgIndex: 2);
         return WriteSnprintfOutput(ctx, destination, ulong.MaxValue, rendered);
     }
+
+    [SysAbiExport(
+        Nid = "xEszJVGpybs",
+        ExportName = "sprintf_s",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libc")]
+    public static int SprintfS(CpuContext ctx) => SnprintfCore(ctx);
 
     [SysAbiExport(
         Nid = "jbz9I9vkqkk",

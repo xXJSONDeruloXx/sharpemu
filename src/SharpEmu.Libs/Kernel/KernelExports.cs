@@ -215,7 +215,7 @@ public static class KernelExports
             name,
             priority,
             affinityMask);
-        if (threadIdAddress != 0 && !ctx.TryWriteUInt64(threadIdAddress, threadHandle))
+        if (threadIdAddress != 0 && !KernelMemoryCompatExports.TryWriteUInt64Compat(ctx, threadIdAddress, threadHandle))
         {
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
         }
@@ -463,6 +463,20 @@ public static class KernelExports
         // fall through to the host's native abort() does not unwind the guest thread cleanly.
         Console.Error.WriteLine("[LOADER][INFO] abort() called by guest - terminating");
         GuestThreadExecution.RequestCurrentEntryExit("abort", -1);
+        ctx[CpuRegister.Rax] = unchecked((ulong)(-1L));
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
+        Nid = "-QgqOT5u2Vk",
+        ExportName = "_Assert",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libc")]
+    public static int Assert(CpuContext ctx)
+    {
+        Console.Error.WriteLine(
+            $"[LOADER][ERROR] _Assert called: rip=0x{ctx.Rip:X16} rdi=0x{ctx[CpuRegister.Rdi]:X16} rsi=0x{ctx[CpuRegister.Rsi]:X16} rdx=0x{ctx[CpuRegister.Rdx]:X16} rcx=0x{ctx[CpuRegister.Rcx]:X16}");
+        GuestThreadExecution.RequestCurrentEntryExit("_Assert", -1);
         ctx[CpuRegister.Rax] = unchecked((ulong)(-1L));
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }

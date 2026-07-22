@@ -220,3 +220,85 @@ public static class CxaGuardExports
             $"[LOADER][TRACE] {op}: guard=0x{guardPtr:X16} result={result} init={initialized} in_progress={inProgress} owner_thread={ownerThreadId}");
     }
 }
+
+public static unsafe class CxxMemoryExports
+{
+    [SysAbiExport(
+        Nid = "fJnpuVVBbKk",
+        ExportName = "_Znwm",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libc")]
+    public static int OperatorNew(CpuContext ctx)
+    {
+        return Allocate(ctx);
+    }
+
+    [SysAbiExport(
+        Nid = "hdm0YfMa7TQ",
+        ExportName = "_Znam",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libc")]
+    public static int OperatorNewArray(CpuContext ctx)
+    {
+        return Allocate(ctx);
+    }
+
+    private static int Allocate(CpuContext ctx)
+    {
+        var size = ctx[CpuRegister.Rdi];
+        if (size == 0)
+        {
+            size = 1;
+        }
+
+        var allocation = HostMemory.Alloc(null, checked((nuint)size), HostMemory.MEM_RESERVE | HostMemory.MEM_COMMIT, HostMemory.PAGE_READWRITE);
+        ctx[CpuRegister.Rax] = allocation is null ? 0 : unchecked((ulong)(nint)allocation);
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
+        Nid = "MLWl90SFWNE",
+        ExportName = "_ZdaPv",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libc")]
+    public static int OperatorDeleteArray(CpuContext ctx)
+    {
+        return Free(ctx);
+    }
+
+    [SysAbiExport(
+        Nid = "z+P+xCnWLBk",
+        ExportName = "_ZdlPv",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libc")]
+    public static int OperatorDelete(CpuContext ctx)
+    {
+        return Free(ctx);
+    }
+
+    private static int Free(CpuContext ctx)
+    {
+        var allocation = ctx[CpuRegister.Rdi];
+        if (allocation != 0)
+        {
+            HostMemory.Free((void*)allocation, 0, HostMemory.MEM_RELEASE);
+        }
+
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+}
+
+public static class CxxStreamExports
+{
+    [SysAbiExport(
+        Nid = "P8F2oavZXtY",
+        ExportName = "_ZNSt8ios_baseD2Ev",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libc")]
+    public static int IosBaseDestroy(CpuContext ctx)
+    {
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+}

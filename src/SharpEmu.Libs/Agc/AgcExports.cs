@@ -10916,7 +10916,8 @@ public static partial class AgcExports
     private static bool TryReadByte(CpuContext ctx, ulong address, out byte value)
     {
         Span<byte> buffer = stackalloc byte[1];
-        if (!ctx.Memory.TryRead(address, buffer))
+        if (!ctx.Memory.TryRead(address, buffer) &&
+            !KernelMemoryCompatExports.TryReadHostMemory(address, buffer))
         {
             value = 0;
             return false;
@@ -10970,7 +10971,8 @@ public static partial class AgcExports
         }
 
         Span<byte> buffer = stackalloc byte[sizeof(uint)];
-        if (!ctx.Memory.TryRead(address, buffer))
+        if (!ctx.Memory.TryRead(address, buffer) &&
+            !KernelMemoryCompatExports.TryReadHostMemory(address, buffer))
         {
             value = 0;
             return false;
@@ -10984,7 +10986,8 @@ public static partial class AgcExports
     {
         Span<byte> buffer = stackalloc byte[sizeof(uint)];
         BinaryPrimitives.WriteUInt32LittleEndian(buffer, value);
-        return ctx.Memory.TryWrite(address, buffer);
+        return ctx.Memory.TryWrite(address, buffer) ||
+            KernelMemoryCompatExports.TryWriteHostMemory(address, buffer);
     }
 
     private static bool TryReadUInt64(CpuContext ctx, ulong address, out ulong value)
@@ -10999,7 +11002,8 @@ public static partial class AgcExports
         }
 
         Span<byte> buffer = stackalloc byte[sizeof(ulong)];
-        if (!ctx.Memory.TryRead(address, buffer))
+        if (!ctx.Memory.TryRead(address, buffer) &&
+            !KernelMemoryCompatExports.TryReadHostMemory(address, buffer))
         {
             value = 0;
             return false;
@@ -11565,8 +11569,20 @@ public static partial class AgcExports
         uint owner;
         lock (state.Gate)
         {
-            if (!state.ResourceRegistrationInitialized ||
-                state.ResourceRegistrationMaxOwners != 0 &&
+            if (!state.ResourceRegistrationInitialized)
+            {
+                state.ResourceRegistrationInitialized = true;
+                state.ResourceRegistrationMemory = 0;
+                state.ResourceRegistrationMemorySize = 0;
+                state.ResourceRegistrationMaxOwners = uint.MaxValue;
+                state.ResourceOwners.Clear();
+                state.RegisteredResources.Clear();
+                state.DefaultOwner = DefaultAgcOwner;
+                state.NextOwner = 1;
+                state.NextResource = 1;
+            }
+
+            if (state.ResourceRegistrationMaxOwners != 0 &&
                 state.ResourceOwners.Count >= state.ResourceRegistrationMaxOwners)
             {
                 return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
@@ -11586,7 +11602,10 @@ public static partial class AgcExports
             state.ResourceOwners.Add(owner, System.Text.Encoding.UTF8.GetString(nameBytes));
         }
 
-        if (!ctx.TryWriteUInt32(ownerAddress, owner))
+        Span<byte> ownerBytes = stackalloc byte[sizeof(uint)];
+        BinaryPrimitives.WriteUInt32LittleEndian(ownerBytes, owner);
+        if (!ctx.Memory.TryWrite(ownerAddress, ownerBytes) &&
+            !KernelMemoryCompatExports.TryWriteHostMemory(ownerAddress, ownerBytes))
         {
             lock (state.Gate)
             {
@@ -11599,6 +11618,20 @@ public static partial class AgcExports
         TraceAgc(
             $"agc.driver_register_owner out=0x{ownerAddress:X16} owner={owner} " +
             $"name={System.Text.Encoding.UTF8.GetString(nameBytes)}");
+        return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_OK);
+    }
+
+    [SysAbiExport(
+        Nid = "3AyTaWcF-H8",
+        ExportName = "sceAgcDriverRegisterWorkloadStream",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int DriverRegisterWorkloadStream(CpuContext ctx)
+    {
+        TraceAgc(
+            $"agc.driver_register_workload_stream owner=0x{ctx[CpuRegister.Rdi]:X16} " +
+            $"name=0x{ctx[CpuRegister.Rsi]:X16} data=0x{ctx[CpuRegister.Rdx]:X16} " +
+            $"extra=0x{ctx[CpuRegister.R8]:X16} flags=0x{ctx[CpuRegister.R9]:X16}");
         return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_OK);
     }
 
