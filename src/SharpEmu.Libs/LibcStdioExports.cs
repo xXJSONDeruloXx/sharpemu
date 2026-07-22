@@ -17,6 +17,11 @@ public static class LibcStdioExports
     private const ulong GuestFileObjectSize = 0x100;
 
     private static readonly ConcurrentDictionary<ulong, FileStream> _fileHandles = new();
+    private static readonly ConcurrentDictionary<ulong, string> _filePaths = new();
+    public static ulong LastPngReadDestination { get; private set; }
+    public static string? LastPngReadPath { get; private set; }
+    public static ulong PendingTextureSpecObject { get; set; }
+    public static ulong PendingTextureSpecNestedObject { get; set; }
 
     private static readonly bool _traceStdio =
         string.Equals(Environment.GetEnvironmentVariable("SHARPEMU_LOG_STDIO"), "1", StringComparison.Ordinal);
@@ -116,6 +121,7 @@ public static class LibcStdioExports
             }
 
             _fileHandles[handle] = stream;
+            _filePaths[handle] = guestPath;
 
             if (_traceStdio)
             {
@@ -216,6 +222,7 @@ public static class LibcStdioExports
         try
         {
             stream.Dispose();
+            _filePaths.TryRemove(handle, out _);
             ctx[CpuRegister.Rax] = 0;
             return (int)OrbisGen2Result.ORBIS_GEN2_OK;
         }
@@ -286,6 +293,7 @@ public static class LibcStdioExports
             }
 
             _fileHandles[handle] = stream;
+            _filePaths[handle] = guestPath;
             ctx[CpuRegister.Rax] = handle;
             return (int)OrbisGen2Result.ORBIS_GEN2_OK;
         }
@@ -340,8 +348,13 @@ public static class LibcStdioExports
                 if (!ctx.Memory.TryWrite(destination + totalRead, buffer.AsSpan(0, read)) &&
                     !KernelMemoryCompatExports.TryWriteHostMemory(destination + totalRead, buffer.AsSpan(0, read)))
                 {
-                    ctx[CpuRegister.Rax] = totalRead / elementSize;
-                    return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+                    if (_traceStdio)
+                    {
+                        Console.Error.WriteLine(
+                            $"[LOADER][WARN] fread: write fallback failed addr=0x{destination + totalRead:X16} len=0x{read:X}");
+                    }
+
+                    break;
                 }
 
                 totalRead += (ulong)read;
@@ -359,8 +372,71 @@ public static class LibcStdioExports
 
         if (_traceStdio)
         {
+            _filePaths.TryGetValue(handle, out var guestPath);
+            if (!string.IsNullOrWhiteSpace(guestPath) && guestPath.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
+            {
+                LastPngReadDestination = destination;
+                LastPngReadPath = guestPath;
+                if (PendingTextureSpecNestedObject != 0)
+                {
+                    var nestedPatched = ctx.TryWriteUInt64(PendingTextureSpecNestedObject, destination);
+                    if (!nestedPatched)
+                    {
+                        try
+                        {
+                            Marshal.WriteInt64((nint)PendingTextureSpecNestedObject, unchecked((long)destination));
+                            nestedPatched = true;
+                        }
+                        catch
+                        {
+                            nestedPatched = false;
+                        }
+                    }
+
+                    if (nestedPatched)
+                    {
+                        Console.Error.WriteLine($"[LOADER][TRACE] patched nested textureSpec.m_dataAddress @0x{PendingTextureSpecNestedObject:X16} = 0x{destination:X16}");
+                        Console.Error.WriteLine($"[LOADER][TRACE] nested textureSpec after patch @0x{PendingTextureSpecNestedObject:X16}:");
+                        for (var offset = 0; offset < 0x40; offset += 8)
+                        {
+                            if (!ctx.TryReadUInt64(PendingTextureSpecNestedObject + (ulong)offset, out var nestedValue))
+                            {
+                                Console.Error.WriteLine($"[LOADER][TRACE]   +0x{offset:X2}: <unreadable>");
+                                break;
+                            }
+
+                            Console.Error.WriteLine($"[LOADER][TRACE]   +0x{offset:X2}: 0x{nestedValue:X16}");
+                        }
+                    }
+                    else
+                    {
+                        Console.Error.WriteLine($"[LOADER][WARN] nested textureSpec patch failed @0x{PendingTextureSpecNestedObject:X16}");
+                    }
+
+                    PendingTextureSpecNestedObject = 0;
+                }
+                if (PendingTextureSpecObject != 0)
+                {
+                    try
+                    {
+                        Marshal.WriteInt64((nint)PendingTextureSpecObject, unchecked((long)destination));
+                        Console.Error.WriteLine($"[LOADER][TRACE] patched pending textureSpec.m_dataAddress @0x{PendingTextureSpecObject:X16} = 0x{destination:X16}");
+                        Console.Error.WriteLine($"[LOADER][TRACE] pending textureSpec after patch @0x{PendingTextureSpecObject:X16}:");
+                        for (var offset = 0; offset < 0x40; offset += 8)
+                        {
+                            var slot = (nint)PendingTextureSpecObject + offset;
+                            Console.Error.WriteLine($"[LOADER][TRACE]   +0x{offset:X2}: 0x{Marshal.ReadInt64(slot):X16}");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine($"[LOADER][WARN] pending textureSpec patch failed @0x{PendingTextureSpecObject:X16}: {ex.GetType().Name}");
+                    }
+                    PendingTextureSpecObject = 0;
+                }
+            }
             Console.Error.WriteLine(
-                $"[LOADER][TRACE] fread: handle=0x{handle:X} requested={totalRequested} read={totalRead} pos={stream.Position}");
+                $"[LOADER][TRACE] fread: handle=0x{handle:X} path='{guestPath ?? "<unknown>"}' dest=0x{destination:X16} requested={totalRequested} read={totalRead} pos={stream.Position}");
         }
 
         ctx[CpuRegister.Rax] = totalRead / elementSize;
@@ -417,8 +493,13 @@ public static class LibcStdioExports
             if (!ctx.Memory.TryWrite(destination, withNul) &&
                 !KernelMemoryCompatExports.TryWriteHostMemory(destination, withNul))
             {
+                if (_traceStdio)
+                {
+                    Console.Error.WriteLine($"[LOADER][WARN] fgets: write fallback failed addr=0x{destination:X16} len=0x{withNul.Length:X}");
+                }
+
                 ctx[CpuRegister.Rax] = 0;
-                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
             }
         }
         finally
@@ -759,6 +840,7 @@ public static class LibcStdioExports
             var stream = new FileStream(hostPath, fileMode, fileAccess, FileShare.ReadWrite);
             // freopen keeps the caller's FILE* identity, so rebind the same handle value.
             _fileHandles[handle] = stream;
+            _filePaths[handle] = guestPath;
 
             if (_traceStdio)
             {

@@ -1352,6 +1352,60 @@ public static partial class AgcExports
     }
 
     [SysAbiExport(
+        Nid = "dbOlWdppb4o",
+        ExportName = "sceAgcWritePayloadCompat",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int WritePayloadCompat(CpuContext ctx)
+    {
+        var destination = ctx[CpuRegister.Rdi];
+        var value = ctx[CpuRegister.Rsi];
+        var size = ctx[CpuRegister.Rdx];
+        TryReadUInt64(ctx, destination, out var destinationValue);
+        TryReadUInt64(ctx, value, out var sourceValue);
+        TraceAgc(
+            $"agc.write_payload destination=0x{destination:X16} value=0x{value:X16} " +
+            $"size=0x{size:X16} rcx=0x{ctx[CpuRegister.Rcx]:X16} " +
+            $"dst_value=0x{destinationValue:X16} src_value=0x{sourceValue:X16}");
+        // The helper is used here to publish the payload pointer through an
+        // output slot. Preserve the guest pointer rather than only reporting
+        // success; the following AGC setup reads this slot back.
+        if (destination != 0 && !ctx.TryWriteUInt64(destination, value))
+        {
+            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+        }
+
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
+        Nid = "LFSPFmGc9Hg",
+        ExportName = "sceAgcDcbSetWorkloadsActive",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int DcbSetWorkloadsActive(CpuContext ctx)
+    {
+        var statusAddress = ctx[CpuRegister.Rdx];
+        var queueGlobal = ctx[CpuRegister.Rbx];
+        TryReadUInt64(ctx, queueGlobal, out var queueBefore);
+        TryReadUInt64(ctx, ctx[CpuRegister.Rbp] - 0x10, out var savedQueueValue);
+        TryReadUInt32(ctx, statusAddress, out var statusBefore);
+        TraceAgc(
+            $"agc.dcb_set_workloads_active rdi=0x{ctx[CpuRegister.Rdi]:X16} " +
+            $"rsi=0x{ctx[CpuRegister.Rsi]:X16} rdx=0x{statusAddress:X16} " +
+            $"rcx=0x{ctx[CpuRegister.Rcx]:X16} rbx=0x{queueGlobal:X16} " +
+            $"queue_before=0x{queueBefore:X16} saved=0x{savedQueueValue:X16} " +
+            $"status_before=0x{statusBefore:X8}");
+        // rdx is the guest workload/status argument supplied by the title, not
+        // an output result slot. The real DCB helper consumes it while building
+        // the queue state; clobbering its first dword changes the workload ID
+        // from 1 to 0 and makes the subsequent context check fail.
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
         Nid = "TRO721eVt4g",
         ExportName = "sceAgcDcbResetQueue",
         Target = Generation.Gen5,
@@ -10524,9 +10578,12 @@ public static partial class AgcExports
     {
         var commandAddress = ctx[CpuRegister.Rdi];
         var registersAddress = ctx[CpuRegister.Rsi];
+        // Some Carbon startup paths issue an optional patch with a null
+        // command buffer. The retail runtime treats that as a no-op; rejecting
+        // it makes the title assert during graphics initialization.
         if (commandAddress == 0 || registersAddress == 0)
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_OK);
         }
 
         if (!TryWriteUInt32(ctx, commandAddress + 8, (uint)(registersAddress & 0xFFFF_FFFFUL)) ||
@@ -10600,9 +10657,10 @@ public static partial class AgcExports
     {
         var commandAddress = ctx[CpuRegister.Rdi];
         var registerCount = (uint)ctx[CpuRegister.Rsi];
+        // A null command buffer means that this optional patch has no target.
         if (commandAddress == 0)
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_OK);
         }
 
         if (!TryReadUInt32(ctx, commandAddress + 4, out var currentCount) ||

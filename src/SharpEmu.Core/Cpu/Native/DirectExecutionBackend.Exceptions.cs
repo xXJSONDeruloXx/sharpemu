@@ -114,6 +114,10 @@ public sealed partial class DirectExecutionBackend
 			{
 				return -1;
 			}
+			if (exceptionCode == 3221225620u && TryRecoverGexZeroDivisor(contextRecord, rip))
+			{
+				return -1;
+			}
 			if (TryRecoverAuxiliaryThreadExecuteFault(exceptionRecord, contextRecord, rip))
 			{
 				return -1;
@@ -428,6 +432,89 @@ public sealed partial class DirectExecutionBackend
 		{
 			_vectoredHandlerDepth--;
 		}
+	}
+
+	private static unsafe bool TryRecoverGexZeroDivisor(void* contextRecord, ulong rip)
+	{
+		// Gex's allocator walks a bucket list at this instruction. A missing
+		// optional allocator initialization path can leave the bucket stride in
+		// r13 unset; retrying with a unit stride preserves progress while the
+		// host-backed allocator supplies the actual storage.
+		if (rip != 0x00000008002F65A1UL)
+		{
+			return false;
+		}
+
+		var rax = ReadCtxU64(contextRecord, CTX_RAX);
+		var rdx = ReadCtxU64(contextRecord, CTX_RDX);
+		var r13 = ReadCtxU64(contextRecord, CTX_R13);
+		var replacementStride = 1UL;
+		var rawStride = Environment.GetEnvironmentVariable("SHARPEMU_GEX_BUCKET_STRIDE");
+		if (!string.IsNullOrWhiteSpace(rawStride))
+		{
+			var normalizedStride = rawStride.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? rawStride[2..] : rawStride;
+			_ = ulong.TryParse(normalizedStride, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out replacementStride);
+			if (replacementStride == 0)
+			{
+				replacementStride = 1;
+			}
+		}
+		WriteCtxU64(contextRecord, CTX_R13, replacementStride);
+		var metadataAddress = ReadCtxU64(contextRecord, CTX_RSI);
+		var metadataHead = new byte[8];
+		if (TryReadHostBytes(metadataAddress, metadataHead))
+		{
+			var head = BinaryPrimitives.ReadUInt64LittleEndian(metadataHead);
+			// The second allocator argument is the list sentinel. Gex passes it
+			// as null because the host-backed list head is implicit in its pool
+			// metadata; use that head instead of making the walk terminate at 0.
+			WriteCtxU64(contextRecord, CTX_R15, head);
+			if (string.Equals(Environment.GetEnvironmentVariable("SHARPEMU_GEX_DIVISOR_HEAD"), "1", StringComparison.Ordinal))
+			{
+				WriteCtxU64(contextRecord, CTX_R13, head);
+			}
+		}
+		Console.Error.WriteLine(
+			$"[LOADER][WARN] Recovered Gex zero-divisor at 0x{rip:X16}; using bucket stride 0x{replacementStride:X} " +
+			$"(rax=0x{rax:X16} rdx=0x{rdx:X16} r13=0x{r13:X16}).");
+		if (string.Equals(Environment.GetEnvironmentVariable("SHARPEMU_TRACE_GEX_RECOVERY"), "1", StringComparison.Ordinal))
+		{
+			var code = new byte[32];
+			if (TryReadHostBytes(rip, code))
+			{
+				Console.Error.WriteLine($"[LOADER][TRACE] Gex recovery code: {BitConverter.ToString(code).Replace("-", " ")}");
+			}
+			var preCode = new byte[0x200];
+			if (rip >= 0x200 && TryReadHostBytes(rip - 0x200, preCode))
+			{
+				Console.Error.WriteLine($"[LOADER][TRACE] Gex recovery pre-code: {BitConverter.ToString(preCode).Replace("-", " ")}");
+			}
+
+			var rsp = ReadCtxU64(contextRecord, CTX_RSP);
+			var rsi = ReadCtxU64(contextRecord, CTX_RSI);
+			Console.Error.WriteLine(
+				$"[LOADER][TRACE] Gex recovery regs rdi=0x{ReadCtxU64(contextRecord, CTX_RDI):X16} " +
+				$"rsi=0x{rsi:X16} " +
+				$"r10=0x{ReadCtxU64(contextRecord, CTX_R10):X16} " +
+				$"r12=0x{ReadCtxU64(contextRecord, CTX_R12):X16} " +
+				$"r14=0x{ReadCtxU64(contextRecord, CTX_R14):X16} " +
+				$"r15=0x{ReadCtxU64(contextRecord, CTX_R15):X16}");
+			var allocatorBytes = new byte[0x80];
+			if (TryReadHostBytes(rsi, allocatorBytes))
+			{
+				Console.Error.WriteLine($"[LOADER][TRACE] Gex allocator metadata: {BitConverter.ToString(allocatorBytes).Replace("-", " ")}");
+			}
+			for (var index = 0; index < 12; index++)
+			{
+				if (!TryReadHostQword(rsp + (ulong)(index * 8), out var value))
+				{
+					break;
+				}
+				Console.Error.WriteLine($"[LOADER][TRACE] Gex recovery stack+0x{index * 8:X2}=0x{value:X16}");
+			}
+		}
+		Console.Error.Flush();
+		return true;
 	}
 
 	private unsafe bool TryRecoverAuxiliaryThreadExecuteFault(

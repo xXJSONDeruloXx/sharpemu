@@ -55,6 +55,15 @@ public static class HleDataSymbols
     private static readonly nint _fakeLocaleMethod18Ptr = Marshal.GetFunctionPointerForDelegate(_fakeLocaleMethod18);
     private static nint _fakeLocaleObjectAddress;
 
+    private static readonly FakeLocaleMethod _fakeCodecvtMethod10 = FakeCodecvtMethod10;
+    private static readonly FakeLocaleMethod _fakeCodecvtMethod18 = FakeCodecvtMethod18;
+    private static readonly FakeLocaleMethod _fakeCodecvtMethod20 = FakeCodecvtMethod20;
+    private static readonly FakeLocaleMethod _fakeCodecvtMethod28 = FakeCodecvtMethod28;
+    private static readonly nint _fakeCodecvtMethod10Ptr = Marshal.GetFunctionPointerForDelegate(_fakeCodecvtMethod10);
+    private static readonly nint _fakeCodecvtMethod18Ptr = Marshal.GetFunctionPointerForDelegate(_fakeCodecvtMethod18);
+    private static readonly nint _fakeCodecvtMethod20Ptr = Marshal.GetFunctionPointerForDelegate(_fakeCodecvtMethod20);
+    private static readonly nint _fakeCodecvtMethod28Ptr = Marshal.GetFunctionPointerForDelegate(_fakeCodecvtMethod28);
+
     private static readonly object _gate = new();
     private static readonly nint _libstdcxxHandle = TryLoadLibrary("libstdc++.so.6");
     private static readonly nint _libcHandle = TryLoadLibrary(OperatingSystem.IsMacOS() ? "libSystem.dylib" : "libc.so.6");
@@ -380,36 +389,60 @@ public static class HleDataSymbols
         return 0;
     }
 
+    private static nint FakeCodecvtMethod10(nint thisPtr, nint arg1, nint arg2, nint arg3)
+    {
+        _ = thisPtr;
+        _ = arg1;
+        _ = arg2;
+        _ = arg3;
+        return 0;
+    }
+
+    private static nint FakeCodecvtMethod18(nint thisPtr, nint arg1, nint arg2, nint arg3)
+    {
+        _ = thisPtr;
+        _ = arg1;
+        _ = arg2;
+        _ = arg3;
+        return 0;
+    }
+
+    private static nint FakeCodecvtMethod20(nint thisPtr, nint arg1, nint arg2, nint arg3)
+    {
+        _ = thisPtr;
+        _ = arg1;
+        _ = arg2;
+        _ = arg3;
+        return 1;
+    }
+
+    private static nint FakeCodecvtMethod28(nint thisPtr, nint arg1, nint arg2, nint arg3)
+    {
+        _ = thisPtr;
+        _ = arg1;
+        _ = arg2;
+        _ = arg3;
+        return 0;
+    }
+
     private static nint CopyCodecvtVTableProxy(nint classicLocale)
     {
-        if (classicLocale == 0)
-        {
-            return 0;
-        }
+        _ = classicLocale;
 
         try
         {
-            var facet = StdUseFacetCodecvt(classicLocale);
-            if (facet == 0)
-            {
-                return 0;
-            }
-
-            var vtable = ReadPointer(facet);
-            if (vtable == 0)
-            {
-                return 0;
-            }
-
-            var destination = Allocate(StdVTableSize);
+            var destination = Allocate(0x40);
             if (destination == 0)
             {
                 return 0;
             }
 
-            var bytes = new byte[StdVTableSize];
-            Marshal.Copy((IntPtr)vtable, bytes, 0, StdVTableSize);
-            Marshal.Copy(bytes, 0, destination, StdVTableSize);
+            WritePointer(IntPtr.Add(destination, 0x10), _fakeCodecvtMethod10Ptr);
+            WritePointer(IntPtr.Add(destination, 0x18), _fakeCodecvtMethod18Ptr);
+            WritePointer(IntPtr.Add(destination, 0x20), _fakeCodecvtMethod10Ptr);
+            WritePointer(IntPtr.Add(destination, 0x28), _fakeCodecvtMethod18Ptr);
+            WritePointer(IntPtr.Add(destination, 0x30), _fakeCodecvtMethod20Ptr);
+            WritePointer(IntPtr.Add(destination, 0x38), _fakeCodecvtMethod28Ptr);
             return destination;
         }
         catch

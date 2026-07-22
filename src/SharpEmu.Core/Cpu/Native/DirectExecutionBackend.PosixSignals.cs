@@ -23,6 +23,7 @@ public sealed unsafe partial class DirectExecutionBackend
 	private const int PosixSigIll = 4;
 	private const int PosixSigTrap = 5;
 	private const int PosixSigAbort = 6;
+	private const int PosixSigFpe = 8;
 	private const int PosixSigSegv = 11;
 	private static readonly int PosixSigBus = OperatingSystem.IsMacOS() ? 10 : 7;
 
@@ -119,6 +120,7 @@ public sealed unsafe partial class DirectExecutionBackend
 
 		if (!InstallPosixSignalHandler(PosixSigSegv) ||
 			!InstallPosixSignalHandler(PosixSigBus) ||
+			!InstallPosixSignalHandler(PosixSigFpe) ||
 			!InstallPosixSignalHandler(PosixSigIll) ||
 			!InstallPosixSignalHandler(PosixSigTrap) ||
 			!InstallPosixSignalHandler(PosixSigAbort))
@@ -127,7 +129,7 @@ public sealed unsafe partial class DirectExecutionBackend
 		}
 
 		_posixSignalHandlersInstalled = true;
-		Console.Error.WriteLine("[LOADER][INFO] POSIX signal exception bridge installed (SIGSEGV/SIGBUS/SIGILL)");
+		Console.Error.WriteLine("[LOADER][INFO] POSIX signal exception bridge installed (SIGSEGV/SIGBUS/SIGFPE/SIGILL)");
 	}
 
 	/// <summary>
@@ -299,6 +301,12 @@ public sealed unsafe partial class DirectExecutionBackend
 		if (signal == PosixSigIll)
 		{
 			record.ExceptionCode = 3221225501u;
+		}
+		else if (signal == PosixSigFpe)
+		{
+			// STATUS_INTEGER_DIVIDE_BY_ZERO. Keep the faulting RIP intact so
+			// VectoredHandler can identify the guest instruction and registers.
+			record.ExceptionCode = 3221225620u;
 		}
 		else if (signal == PosixSigTrap)
 		{

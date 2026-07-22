@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -173,16 +174,18 @@ public sealed partial class DirectExecutionBackend
 		{
 			return;
 		}
-		const int preludeSize = 192;
+		var preludeSize = string.Equals(Environment.GetEnvironmentVariable("SHARPEMU_PROBE_IMPORT_DEEP"), "1", StringComparison.Ordinal)
+			? 0x800
+			: 192;
 		Span<byte> prelude = stackalloc byte[preludeSize];
-		if (returnRip >= preludeSize && cpuContext.Memory.TryRead(returnRip - preludeSize, prelude))
+		if (returnRip >= (ulong)preludeSize && cpuContext.Memory.TryRead(returnRip - (ulong)preludeSize, prelude))
 		{
 			Console.Error.WriteLine(
-				$"[LOADER][TRACE] Import#{dispatchIndex} pre-return bytes @0x{returnRip - preludeSize:X16}: " +
+				$"[LOADER][TRACE] Import#{dispatchIndex} pre-return bytes @0x{returnRip - (ulong)preludeSize:X16}: " +
 				BitConverter.ToString(prelude.ToArray()).Replace("-", " "));
 
 			List<DecodedInst>? bestCallChain = null;
-			var preludeAddress = returnRip - preludeSize;
+			var preludeAddress = returnRip - (ulong)preludeSize;
 			for (var startOffset = 0; startOffset < preludeSize; startOffset++)
 			{
 				var cursor = preludeAddress + (ulong)startOffset;
@@ -214,6 +217,28 @@ public sealed partial class DirectExecutionBackend
 					Console.Error.WriteLine(
 						$"[LOADER][TRACE]   0x{instruction.Rip:X16}: {instruction.Text} " +
 						$"bytes={IcedDecoder.FormatBytes(instruction.Bytes)}");
+				}
+			}
+		}
+		if (string.Equals(Environment.GetEnvironmentVariable("SHARPEMU_PROBE_IMPORT_POSTRET"), "1", StringComparison.Ordinal))
+		{
+			DumpGuestInstructionStream("import-post-return", returnRip, 32);
+		}
+		var extraProbeAddress = Environment.GetEnvironmentVariable("SHARPEMU_PROBE_GUEST_ADDRESS");
+		if (!string.IsNullOrWhiteSpace(extraProbeAddress) &&
+			ulong.TryParse(extraProbeAddress.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? extraProbeAddress[2..] : extraProbeAddress, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var extraAddress))
+		{
+			DumpGuestInstructionStream("probe-extra", extraAddress, 64);
+			var extraBytes = new byte[32];
+			if (TryReadHostBytes(extraAddress, extraBytes))
+			{
+				Console.Error.WriteLine($"[LOADER][INFO] probe-extra host-bytes: {BitConverter.ToString(extraBytes).Replace("-", " ")}");
+			}
+			foreach (var entry in _importEntries)
+			{
+				if (entry.Address == extraAddress)
+				{
+					Console.Error.WriteLine($"[LOADER][INFO] probe-extra import nid={entry.Nid} name={entry.Export?.Name} library={entry.Export?.LibraryName}");
 				}
 			}
 		}

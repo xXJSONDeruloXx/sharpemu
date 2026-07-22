@@ -5,6 +5,7 @@ using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
@@ -14,6 +15,7 @@ using SharpEmu.Core.Cpu.Debugging;
 using SharpEmu.Core.Cpu;
 using SharpEmu.HLE;
 using SharpEmu.Libs.Kernel;
+using SharpEmu.Libs.LibcStdio;
 
 namespace SharpEmu.Core.Cpu.Native;
 
@@ -489,6 +491,12 @@ public sealed partial class DirectExecutionBackend
 		{
 			OrbisGen2Result orbisGen2Result;
 			bool dispatchResolved = true;
+			var traceAgcFrame = string.Equals(Environment.GetEnvironmentVariable("SHARPEMU_TRACE_AGC_FRAME"), "1", StringComparison.Ordinal) &&
+				string.Equals(importStubEntry.Nid, "LFSPFmGc9Hg", StringComparison.Ordinal);
+			if (traceAgcFrame)
+			{
+				TraceAgcImportFrame("before", argPackPtr, cpuContext, num7);
+			}
 			var previousImportCallFrame = GuestThreadExecution.EnterImportCallFrame(
 				num7,
 				(ulong)argPackPtr + 104uL,
@@ -537,6 +545,10 @@ public sealed partial class DirectExecutionBackend
 					CaptureImportBoundaryContinuation(cpuContext, argPackPtr, num7));
 			}
 			StoreImportVectorReturn(cpuContext, argPackPtr);
+			if (traceAgcFrame)
+			{
+				TraceAgcImportFrame("after", argPackPtr, cpuContext, num7);
+			}
 			if (dispatchResolved &&
 				orbisGen2Result == OrbisGen2Result.ORBIS_GEN2_OK &&
 				string.Equals(importStubEntry.Nid, "BohYr-F7-is", StringComparison.Ordinal))
@@ -582,6 +594,86 @@ public sealed partial class DirectExecutionBackend
 						$"[LOADER][WARN] Import#{num} result: {orbisGen2Result} ({importStubEntry.Nid}) " +
 						$"rdi=0x{value:X16} rsi=0x{value2:X16} rdx=0x{num3:X16} rcx=0x{num4:X16} ret=0x{num7:X16}");
 				}
+			}
+			if (Environment.GetEnvironmentVariable("SHARPEMU_TRACE_MSPACE_RETURNS") == "1" &&
+				(importStubEntry.Nid is "-hn1tcVHq5Q" or "OJjm-QOIHlI" or "iF1iQHzxBJU"))
+			{
+				Console.Error.WriteLine(
+					$"[LOADER][TRACE] mspace return nid={importStubEntry.Nid} " +
+					$"rax=0x{cpuContext[CpuRegister.Rax]:X16} ret=0x{num7:X16}");
+			}
+			if (string.Equals(Environment.GetEnvironmentVariable("SHARPEMU_TRACE_MSPACE_FRAME"), "1", StringComparison.Ordinal) &&
+				string.Equals(importStubEntry.Nid, "iF1iQHzxBJU", StringComparison.Ordinal) &&
+				(num7 == 0x00000008002E6F24UL || num7 == 0x00000008002E7EAFUL))
+			{
+				var rbp = cpuContext[CpuRegister.Rbp];
+				var rbxFrame = cpuContext[CpuRegister.Rbx];
+				var r14Frame = cpuContext[CpuRegister.R14];
+				Console.Error.WriteLine(
+					$"[LOADER][TRACE] mspace frame ret=0x{num7:X16} " +
+					$"rbp=0x{rbp:X16} rbx=0x{rbxFrame:X16} " +
+					$"r12=0x{cpuContext[CpuRegister.R12]:X16} r13=0x{cpuContext[CpuRegister.R13]:X16} " +
+					$"r14=0x{r14Frame:X16} r15=0x{cpuContext[CpuRegister.R15]:X16}");
+				DumpFrameQwords("mspace-rbx", rbxFrame, 0x40);
+				DumpFrameQwords("mspace-r14", r14Frame, 0x40);
+				DumpFrameQwords("mspace-rbp", rbp - 0x160, 0x1A0);
+				foreach (var slot in new ulong[] { 0x18, 0x58, 0x70, 0x88, 0xA8, 0xB0, 0xC0, 0xD8 })
+				{
+					var slotAddress = rbp + slot;
+					if (TryReadHostQword(slotAddress, out var candidate) && candidate >= 0x10000)
+					{
+						DumpFrameQwords($"mspace-slot+0x{slot:X2}", candidate, 0x40);
+					}
+				}
+				foreach (var localOffset in new long[] { -0x148, -0x140, -0x138, -0x130, -0x128, -0x120, -0x118, -0x110, -0x108, -0x100, -0xF8, -0xF0, -0xE8, -0xE0, -0xD8 })
+				{
+					var localAddress = (ulong)((long)rbp + localOffset);
+					if (TryReadHostQword(localAddress, out var candidate) && candidate >= 0x10000)
+					{
+						DumpFrameQwords($"mspace-local@{localOffset:+#;-#;0x0}", candidate, 0x40);
+						if (localOffset == -0xF0)
+						{
+							LibcStdioExports.PendingTextureSpecNestedObject = candidate;
+							Console.Error.WriteLine($"[LOADER][TRACE] guest-view@0x{candidate:X16}:");
+							for (var offset = 0; offset < 0x40; offset += 8)
+							{
+								if (!cpuContext.TryReadUInt64(candidate + (ulong)offset, out var guestValue))
+								{
+									Console.Error.WriteLine($"[LOADER][TRACE]   +0x{offset:X2}: <guest-unreadable>");
+									break;
+								}
+
+								Console.Error.WriteLine($"[LOADER][TRACE]   +0x{offset:X2}: 0x{guestValue:X16}");
+							}
+						}
+						if (localOffset == -0x100)
+						{
+							Console.Error.WriteLine($"[LOADER][TRACE] pending textureSpec target @0x{cpuContext[CpuRegister.Rbx]:X16}");
+							LibcStdioExports.PendingTextureSpecObject = cpuContext[CpuRegister.Rbx];
+						}
+					}
+				}
+				LibcStdioExports.PendingTextureSpecObject = cpuContext[CpuRegister.Rbx];
+				if (TryReadHostQword(cpuContext[CpuRegister.Rbx], out var existingDataAddress) && existingDataAddress == 0)
+				{
+					Console.Error.WriteLine($"[LOADER][TRACE] pending textureSpec object @0x{cpuContext[CpuRegister.Rbx]:X16}");
+				}
+				Console.Error.Flush();
+			}
+			if (Environment.GetEnvironmentVariable("SHARPEMU_TRACE_AGC_RETURNS") == "1" &&
+				importStubEntry.Export?.LibraryName?.StartsWith("libSceAgc", StringComparison.Ordinal) == true)
+			{
+				Console.Error.WriteLine(
+					$"[LOADER][TRACE] AGC return nid={importStubEntry.Nid} name={importStubEntry.Export?.Name} " +
+					$"rax=0x{cpuContext[CpuRegister.Rax]:X16} ret=0x{num7:X16}");
+			}
+			if (cpuContext[CpuRegister.Rax] == 0x000000008A6C000BUL)
+			{
+				Console.Error.WriteLine(
+					$"[LOADER][WARN] AGC error 0x8A6C000B from import {importStubEntry.Nid} " +
+					$"ret=0x{num7:X16} rdi=0x{value:X16} rsi=0x{value2:X16} " +
+					$"rdx=0x{num3:X16} rcx=0x{num4:X16}");
+				Console.Error.Flush();
 			}
 			cpuContext[CpuRegister.Rbx] = value3;
 			cpuContext[CpuRegister.Rbp] = value4;
@@ -700,6 +792,49 @@ public sealed partial class DirectExecutionBackend
 				Volatile.Write(ref failedGuestThreadState.LastImportResultValid, 1);
 			}
 			return cpuContext[CpuRegister.Rax];
+		}
+	}
+
+	private static void TraceAgcImportFrame(string phase, nint argPackPtr, CpuContext context, ulong returnRip)
+	{
+		var argPack = unchecked((ulong)argPackPtr);
+		var rbx = context[CpuRegister.Rbx];
+		var values = new string[16];
+		for (var index = 0; index < values.Length; index++)
+		{
+			var address = argPack + (ulong)(index * 8);
+			values[index] = TryReadHostFrameQword(address, out var value)
+				? $"{value:X16}"
+				: "????????????????";
+		}
+
+		var rbxValues = new string[8];
+		for (var index = 0; index < rbxValues.Length; index++)
+		{
+			var address = rbx + (ulong)(index * 8);
+			rbxValues[index] = TryReadHostFrameQword(address, out var value)
+				? $"{value:X16}"
+				: "????????????????";
+		}
+
+		Console.Error.WriteLine(
+			$"[LOADER][TRACE] AGC frame {phase} ret=0x{returnRip:X16} " +
+			$"rsp=0x{context[CpuRegister.Rsp]:X16} rbx=0x{rbx:X16} " +
+			$"argpack=[{string.Join(' ', values)}] rbxmem=[{string.Join(' ', rbxValues)}]");
+		Console.Error.Flush();
+	}
+
+	private static bool TryReadHostFrameQword(ulong address, out ulong value)
+	{
+		try
+		{
+			value = unchecked((ulong)Marshal.ReadInt64((nint)address));
+			return true;
+		}
+		catch
+		{
+			value = 0;
+			return false;
 		}
 	}
 
@@ -1195,6 +1330,26 @@ public sealed partial class DirectExecutionBackend
 	{
 		var address = checked((ulong)argPackPtr + 104UL + (ulong)index * sizeof(ulong));
 		return TryReadHostQword(address, out var value) ? value : 0;
+	}
+
+	private static void DumpFrameQwords(string label, ulong baseAddress, int byteCount)
+	{
+		if (baseAddress < 0x10000 || byteCount <= 0)
+		{
+			return;
+		}
+
+		Console.Error.WriteLine($"[LOADER][TRACE] {label} @0x{baseAddress:X16}:");
+		for (var offset = 0; offset < byteCount; offset += 8)
+		{
+			if (!TryReadHostQword(baseAddress + (ulong)offset, out var value))
+			{
+				Console.Error.WriteLine($"[LOADER][TRACE]   +0x{offset:X2}: <unreadable>");
+				break;
+			}
+
+			Console.Error.WriteLine($"[LOADER][TRACE]   +0x{offset:X2}: 0x{value:X16}");
+		}
 	}
 
 	private static GuestCpuContinuation CaptureImportBoundaryContinuation(
@@ -1780,7 +1935,8 @@ public sealed partial class DirectExecutionBackend
 			"WKAXJ4XBPQ4" or // scePthreadCondWait
 			"BmMjYxmew1w" or // scePthreadCondTimedwait
 			"Op8TBGY5KHg" or // pthread_cond_wait
-			"27bAgiJmOh0";   // pthread_cond_timedwait
+			"27bAgiJmOh0" or // pthread_cond_timedwait
+			"T72hz6ffq08";   // scePthreadYield
 
 	private void ResetImportLoopPattern()
 	{
